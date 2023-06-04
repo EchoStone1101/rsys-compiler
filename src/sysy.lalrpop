@@ -1,0 +1,257 @@
+use crate::frontend::ast::*;
+use crate::error::*;
+
+//! The grammar for SYSY is as follows:
+//! 
+//! CompUnit      ::= [ CompUnit ] (Decl | FuncDef);
+//! Decl          ::= ConstDecl | VarDecl;
+//! ConstDecl     ::= "const" BType ConstDef {"," ConstDef} ";";
+//! BType         ::= "int";
+//! ConstDef      ::= IDENT {"[" ConstExp "]"} "=" ConstInitVal;
+//! ConstInitVal  ::= ConstExp | "{" [ConstInitVal {"," ConstInitVal}] "}";
+//! VarDecl       ::= BType VarDef {"," VarDef} ";";
+//! VarDef        ::= IDENT {"[" ConstExp "]"}
+//!                 | IDENT {"[" ConstExp "]"} "=" InitVal;
+//! InitVal       ::= Exp | "{" [InitVal {"," InitVal}] "}";
+//! 
+//! FuncDef       ::= FuncType IDENT "(" [FuncFParams] ")" Block;
+//! FuncType      ::= "void" | "int";
+//! FuncFParams   ::= FuncFParam {"," FuncFParam};
+//! FuncFParam    ::= BType IDENT ["[" "]" {"[" ConstExp "]"}];
+//! 
+//! Block         ::= "{" {BlockItem} "}";
+//! BlockItem     ::= Decl | Stmt;
+//! Stmt          ::= LVal "=" Exp ";"
+//!                 | [Exp] ";"
+//!                 | Block
+//!                 | "if" "(" Exp ")" Stmt ["else" Stmt]
+//!                 | "while" "(" Exp ")" Stmt
+//!                 | "break" ";"
+//!                 | "continue" ";"
+//!                 | "return" [Exp] ";";
+//! 
+//! Exp           ::= LOrExp;
+//! LVal          ::= IDENT {"[" Exp "]"};
+//! PrimaryExp    ::= "(" Exp ")" | LVal | Number;
+//! Number        ::= INT_CONST;
+//! UnaryExp      ::= PrimaryExp | IDENT "(" [FuncRParams] ")" | UnaryOp UnaryExp;
+//! UnaryOp       ::= "+" | "-" | "!";
+//! FuncRParams   ::= Exp {"," Exp};
+//! MulExp        ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
+//! AddExp        ::= MulExp | AddExp ("+" | "-") MulExp;
+//! RelExp        ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
+//! EqExp         ::= RelExp | EqExp ("==" | "!=") RelExp;
+//! LAndExp       ::= EqExp | LAndExp "&&" EqExp;
+//! LOrExp        ::= LAndExp | LOrExp "||" LAndExp;
+//! ConstExp      ::= Exp;
+
+grammar<'x>(raw_input: &'x str);
+
+// Constraints for the lexer
+match {
+  // Skip whitespace and comments
+  r"\s*" => {},
+  r"//[^\n\r]*[\n\r]*" => {}, // `// comment`
+  r"/\*([^\*]*\*+[^\*/])*([^\*]*\*+|[^\*])*\*/" => {}, // `/* comment */`
+  // Go default for the rest
+  _
+}
+
+pub CompUnit: Box<CompUnit> = {
+  CompUnit? Decl => Box::new(CompUnit::Decl(<>)),
+  CompUnit? FuncDef => Box::new(CompUnit::FuncDef(<>)),
+}
+
+Decl: Box<Decl> = {
+  ConstDecl => Box::new(Decl::ConstDecl(<>)),
+  VarDecl => Box::new(Decl::VarDecl(<>)),
+};
+
+ConstDecl: Box<ConstDecl> = "const" <btype: BType> <mut v: (<ConstDef> ",")*> <e: ConstDef> ";" => {
+  v.push(e);
+  Box::new(ConstDecl::new(btype, v))
+};
+
+ConstDef: Box<ConstDef> = <IDENT> <("[" <ConstExp> "]")*> "=" <ConstInitVal> => Box::new(ConstDef::new(<>));
+
+BType: BType = "int" => BType::Int;
+
+ConstInitVal: Box<ConstInitVal> = {
+  ConstExp => Box::new(ConstInitVal::ConstExp(<>)),
+  "{" <mut v: (<ConstInitVal> ",")*> <e: ConstInitVal?> "}" => match e {
+    None => Box::new(ConstInitVal::ValList(v)),
+    Some(e) => {
+      v.push(e);
+      Box::new(ConstInitVal::ValList(v))
+    }
+  }
+};
+
+VarDecl: Box<VarDecl> = <btype: BType> <mut v: (<VarDef> ",")*> <e: VarDef> ";" => {
+  v.push(e);
+  Box::new(VarDecl { btype, var_def: v })
+};
+
+VarDef: Box<VarDef> = IDENT ("[" <ConstExp> "]")* ("=" <InitVal>)? => Box::new(VarDef::new(<>));
+
+InitVal: Box<InitVal> = {
+  Exp => Box::new(InitVal::Exp(<>)),
+  "{" <mut v: (<InitVal> ",")*> <e: InitVal?> "}" => match e {
+    None => Box::new(InitVal::ValList(v)),
+    Some(e) => {
+      v.push(e);
+      Box::new(InitVal::ValList(v))
+    }
+  }
+};
+
+FuncDef: Box<FuncDef> = {
+  <btype: BType> <id: IDENT> "(" <params: FuncFParams?> ")" <blk: Block> => {
+    let ty = match btype {
+      BType::Int => FuncType::Int,
+    };
+    Box::new(FuncDef::new(ty, id, params, blk))
+  },
+  "void" <id: IDENT> "(" <params: FuncFParams?> ")" <blk: Block> => {
+    Box::new(FuncDef::new(FuncType::Void, id, params, blk))
+  }
+};
+
+// FuncType causes conflict with BType,
+// so we make this extinction at FuncDef
+
+// FuncType: FuncType = {
+//   "void" => FuncType::Void,
+//   "int" => FuncType::Int,
+// };
+
+FuncFParams: Box<FuncFParams> = <mut v: (<FuncFParam> ",")*> <e: FuncFParam> => {
+  v.push(e);
+  Box::new(FuncFParams { params: v })
+};
+
+FuncFParam: Box<FuncFParam> = <BType> <IDENT> <("[" "]" <("[" <ConstExp> "]")*>)?> => Box::new(FuncFParam::new(<>));
+
+Block: Box<Block> = "{" <BlockItem*> "}" => Box::new(Block { block_item: <> });
+
+BlockItem: Box<BlockItem> = {
+  Decl => Box::new(BlockItem::Decl(<>)),
+  Stmt => Box::new(BlockItem::Stmt(<>)),
+};
+
+Stmt: Box<Stmt> = {
+  MatchedStmt => <>,
+  OpenStmt => <>,
+};
+
+MatchedStmt: Box<Stmt> = {
+  "if" "(" <exp: Exp> ")" <if_stmt: MatchedStmt> "else" <else_stmt: MatchedStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt))),
+  "while" "(" <Exp> ")" <MatchedStmt> => Box::new(Stmt::While(<>)),
+  // Other statements
+  // Note that it is OK to have a Block here which can contain "if"s, because a Block
+  // contains "{" and "}" that set the boundary.
+  <LVal> "=" <Exp> ";" => Box::new(Stmt::Assign(<>)),
+  <Exp?> ";" => Box::new(Stmt::Exp(<>)),
+  Block => Box::new(Stmt::Block(<>)),
+  <l:@L> "break" <r:@R> ";" => Box::new(Stmt::Break((l, r))),
+  <l:@L> "continue" <r:@R> ";" => Box::new(Stmt::Continue((l, r))),
+  "return" <Exp?> ";" => Box::new(Stmt::Ret(<>)),
+};
+
+OpenStmt: Box<Stmt> = {
+  "if" "(" <exp: Exp> ")" <stmt: Stmt> => Box::new(Stmt::If(exp, stmt, None)),
+  "if" "(" <exp: Exp> ")" <if_stmt: MatchedStmt> "else" <else_stmt: OpenStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt))),
+  "while" "(" <Exp> ")" <OpenStmt> => Box::new(Stmt::While(<>)),
+};
+
+Exp: Box<Exp> = <l:@L> <exp:LOrExp> <r:@R> => Box::new(Exp::LOrExp(exp, (l, r)));
+
+LVal: Box<LVal> = <l:@L> <id: IDENT> <exp:("[" <Exp> "]")*> <r:@R> => Box::new(LVal::new(id, exp, (l, r)));
+
+PrimaryExp: Box<PrimaryExp> = {
+  "(" <Exp> ")" => Box::new(PrimaryExp::Bracketed(<>)),
+  LVal => Box::new(PrimaryExp::LVal(<>)),
+  Number => Box::new(PrimaryExp::Number(<>)),
+  ! => parse_general_error(raw_input.as_bytes(), <>),
+};
+
+Number: Number = <start: @L> <number: IntConst> <end: @R> => {
+  match number {
+    Some(number) => Number::IntConst(number),
+    None => semantic_error(raw_input.as_bytes(), start, end, &SemanticError::IntegerOutOfRange),
+  }
+};
+
+UnaryExp: Box<UnaryExp> = {
+  <l:@L> <exp:PrimaryExp> <r:@R> => Box::new(UnaryExp::PrimaryExp(exp, (l, r))),
+  <l:@L> <id:IDENT> "(" <params:FuncRParams?> ")" <r:@R> => Box::new(UnaryExp::FuncCall(id, params, (l, r))),
+  <l:@L> <op:UnaryOp> <exp:UnaryExp> <r:@R> => Box::new(UnaryExp::Op(op, exp, (l, r))),
+};
+
+UnaryOp: UnaryOp = {
+  "+" => UnaryOp::Plus,
+  "-" => UnaryOp::Minus,
+  "!" => UnaryOp::Not,
+};
+
+FuncRParams: Box<FuncRParams> = <mut v: (<Exp> ",")*> <e: Exp> => {
+  v.push(e);
+  Box::new(FuncRParams { params: v })
+};
+
+MulExp: Box<MulExp> = {
+  UnaryExp => Box::new(MulExp::UnaryExp(<>)),
+  <l:@L> <rest: MulExp> "*" <exp: UnaryExp> <r:@R> => Box::new(MulExp::Mul(rest, exp, (l, r))),
+  <l:@L> <rest: MulExp> "/" <exp: UnaryExp> <r:@R> => Box::new(MulExp::Div(rest, exp, (l, r))),
+  <l:@L> <rest: MulExp> "%" <exp: UnaryExp> <r:@R> => Box::new(MulExp::Rem(rest, exp, (l, r))),
+}
+
+AddExp: Box<AddExp> = {
+  MulExp => Box::new(AddExp::MulExp(<>)),
+  <l:@L> <rest: AddExp> "+" <exp: MulExp> <r:@R> => Box::new(AddExp::Add(rest, exp, (l, r))),
+  <l:@L> <rest: AddExp> "-" <exp: MulExp> <r:@R> => Box::new(AddExp::Sub(rest, exp, (l, r))),
+}
+
+RelExp: Box<RelExp> = {
+  AddExp => Box::new(RelExp::AddExp(<>)),
+  <l:@L> <rest: RelExp> "<" <exp: AddExp> <r:@R> => Box::new(RelExp::Lt(rest, exp, (l, r))),
+  <l:@L> <rest: RelExp> ">" <exp: AddExp> <r:@R> => Box::new(RelExp::Gt(rest, exp, (l, r))),
+  <l:@L> <rest: RelExp> "<=" <exp: AddExp> <r:@R> => Box::new(RelExp::Le(rest, exp, (l, r))),
+  <l:@L> <rest: RelExp> ">=" <exp: AddExp> <r:@R> => Box::new(RelExp::Ge(rest, exp, (l, r))),
+}
+
+EqExp: Box<EqExp> = {
+  RelExp => Box::new(EqExp::RelExp(<>)),
+  <l:@L> <rest: EqExp> "==" <exp: RelExp> <r:@R> => Box::new(EqExp::Eq(rest, exp, (l, r))),
+  <l:@L> <rest: EqExp> "!=" <exp: RelExp> <r:@R> => Box::new(EqExp::Neq(rest, exp, (l, r))),
+}
+
+LAndExp: Box<LAndExp> = {
+  EqExp => Box::new(LAndExp::EqExp(<>)),
+  <l:@L> <rest: LAndExp> "&&" <exp: EqExp> <r:@R> => Box::new(LAndExp::And(rest, exp, (l, r))),
+}
+
+LOrExp: Box<LOrExp> = {
+  LAndExp => Box::new(LOrExp::LAndExp(<>)),
+  <l:@L> <rest: LOrExp> "||" <exp: LAndExp> <r:@R> => Box::new(LOrExp::Or(rest, exp, (l, r))),
+}
+
+ConstExp: Box<ConstExp> = <l:@L> <exp:Exp> <r:@R> => Box::new(ConstExp{exp, pos: (l, r)});
+
+IDENT: Ident = <start: @L> <s: r"[_a-zA-Z][_a-zA-Z0-9]*"> <end: @R> => {
+  Ident { ident: "@".to_string() + s, token_pos: (start, end)}
+};
+
+// IntConst: (i32, IntConstRadix) = {
+//   r"1\d{0,9}" => (i32::from_str_radix(<>, 10).unwrap(), IntConstRadix::Decimal),
+//   r"2\d{0,8}|20\d{8}|21[0-3]\d{7}|214[0-6]\d{6}|2147[0-3]\d{5}|21474[0-7]\d{4}|214748[0-2]\d{3}|2147483[0-5]\d{2}|21474836[0-3]\d|214748364[0-7]" => (i32::from_str_radix(<>, 10).unwrap(), IntConstRadix::Decimal),
+//   r"[3-9]\d{0,8}" => (i32::from_str_radix(<>, 10).unwrap(), IntConstRadix::Decimal),
+//   r"0+|0+[2-7][0-7]{0,9}|0+1[0-7]{0,10}" => (i32::from_str_radix(<>, 8).unwrap(), IntConstRadix::Octal),
+//   r"0[xX]0+|0[xX]0*[89a-fA-F][0-9a-fA-F]{0,6}|0[xX]0*[1-7][0-9a-fA-F]{0,7}" => (i32::from_str_radix(&<>[2..], 16).unwrap(), IntConstRadix::Hex),
+// };
+
+IntConst: Option<i32> = {
+  r"[1-9][0-9]*" => i32::from_str_radix(<>, 10).ok(),
+  r"0[0-7]*" => i32::from_str_radix(<>, 8).ok(),
+  r"0[xX][0-9a-fA-F]+" => i32::from_str_radix(&<>[2..], 16).ok(),
+}
