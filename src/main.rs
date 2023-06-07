@@ -31,9 +31,9 @@ struct Cli {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Mode {
-    #[value(name = "-koopa")]
+    #[value(name = "koopa")]
     Koopa,
-    #[value(name = "-riscv")]
+    #[value(name = "riscv")]
     RiscV,
 }
 
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
 
             // First populate the symbol table with function
             // declarations.
-            ast.register_func_decls(input.as_bytes(), &mut program, &mut sym_tab);
+            ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
             // Then populate Program.
             ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);
 

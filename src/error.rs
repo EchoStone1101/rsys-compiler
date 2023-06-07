@@ -88,12 +88,19 @@ where F: Fn(u8) -> bool
     location
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PromptMode {
+    Error,
+    Warning,
+    Note,
+}
+
 fn prompt_error(
     raw_input: &[u8],
     start: usize,
     end: usize,
     msg: &str,
-    is_warning: bool,
+    mode: PromptMode,
 ) {
     let mut start_pos = Pos::from_raw_position(raw_input, start);
     let mut lineno = start_pos.lineno;
@@ -102,13 +109,16 @@ fn prompt_error(
     start_pos.adjust(raw_input, end - start);
     let end_pos = start_pos;
 
-    if is_warning {
-        eprint!("{}: ", "warning".yellow());
-    }
-    else {
-        eprint!("{}: ", "error".red());
-    }
+    match mode {
+        PromptMode::Error => eprint!("{}: ", "error".red()),
+        PromptMode::Warning => eprint!("{}: ", "warning".yellow()),
+        PromptMode::Note => eprint!("{}: ", "note".blue()),
+    };
     eprintln!("{}", msg);
+
+    if start == 0 && end == 0 {
+        return
+    }
 
     let lineno_len = end_pos.lineno.to_string().len();
     let mut tab = String::with_capacity(lineno_len);
@@ -116,7 +126,7 @@ fn prompt_error(
         tab.push(' ')
     }
 
-    eprintln!(" {}{} Ln {}, Col {}", "-->".blue(), tab, lineno, colno);
+    eprintln!("{}{} Ln {}, Col {}", tab, "-->".blue(), lineno, colno);
     eprintln!("{} {}", tab, "|".blue());
 
     let bad_range = String::from(std::str::from_utf8(&raw_input[start..end]).unwrap());
@@ -126,11 +136,10 @@ fn prompt_error(
     eprint!("{} {}", "|".blue(), String::from(std::str::from_utf8(&raw_input[line_position..start]).unwrap()));
     let mut line = lines.next();
     while let Some(line_str) = line {
-        if is_warning {
-            eprint!("{}", line_str.yellow());
-        }
-        else {
-            eprint!("{}", line_str.red());
+        match mode {
+            PromptMode::Error => eprint!("{}", line_str.red()),
+            PromptMode::Warning => eprint!("{}", line_str.yellow()),
+            PromptMode::Note => eprint!("{}", line_str.blue()),
         }
 
         line = lines.next();
@@ -195,20 +204,20 @@ pub fn parse_general_error<'input>(
                 }
                 end += 1;
             }
-            prompt_error(raw_input, location, end, "invalid token, maybe not UTF-8?", false);
+            prompt_error(raw_input, location, end, "invalid token", PromptMode::Error);
         },
         ParseError::UnrecognizedEof { location, expected } => {
             let start = find_start_of_token(raw_input, location, |_| true);
             if let Some(tok) = expected.iter()
                 .find(|&s| s == "\"}\"" || s == "\"]\"" || s == "\")\"") 
             {
-                prompt_error(raw_input, start, location, format!("missing {} at EOF", tok).as_str(), false);
+                prompt_error(raw_input, start, location, format!("missing {} at EOF", tok).as_str(), PromptMode::Error);
             }
             else if let Some(_) = expected.iter().find(|&s| s == "\";\"") {
-                prompt_error(raw_input, start, location, format!("unexpected EOF, maybe missing \";\"?").as_str(), false);
+                prompt_error(raw_input, start, location, format!("unexpected EOF, maybe missing \";\"?").as_str(), PromptMode::Error);
             }
             else {
-                prompt_error(raw_input, start, location, "unexpected EOF", false);
+                prompt_error(raw_input, start, location, "unexpected EOF", PromptMode::Error);
                 eprintln!("{}: {:?}", "expected tokens".blue(), expected);
             }
         },
@@ -216,16 +225,16 @@ pub fn parse_general_error<'input>(
             if let Some(tok) = expected.iter()
                 .find(|&s| s == "\"}\"" || s == "\"]\"" || s == "\")\"") 
             {
-                prompt_error(raw_input, start, end, format!("missing {} before this", tok).as_str(), false);
+                prompt_error(raw_input, start, end, format!("missing {} before this", tok).as_str(), PromptMode::Error);
             }
             else if tok.1 == "}" || tok.1 == "]" || tok.1 == ")" {
-                prompt_error(raw_input, start, end, format!("perhaps extraneous \"{}\" here", tok.1).as_str(), false);
+                prompt_error(raw_input, start, end, format!("perhaps extraneous \"{}\" here", tok.1).as_str(), PromptMode::Error);
             }
             else if let Some(_) = expected.iter().find(|&s| s == "\";\"") {
-                prompt_error(raw_input, start, end, format!("unexpected token, maybe missing \";\"?").as_str(), false);
+                prompt_error(raw_input, start, end, format!("unexpected token, maybe missing \";\"?").as_str(), PromptMode::Error);
             }
             else {
-                prompt_error(raw_input, start, end, "unexpected token", false);
+                prompt_error(raw_input, start, end, "unexpected token", PromptMode::Error);
                 eprintln!("{}: {:?}", "expected tokens".blue(), expected);
             }
         },
@@ -244,33 +253,55 @@ pub enum SemanticError {
     UndefinedIdent,
     MisuseOfFuncIdent(Ident),
     RedefOfIdent(Ident),
+    DividedByZero,
+    ArrayPartialDeref(Type),
+    ConstUninit,
+    ConstAssignment(TokenPos),
+    NegArrayBound(i32),
 }
 
 pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &SemanticError) -> ! {
 
     match error {
         SemanticError::IntegerOutOfRange => 
-            prompt_error(raw_input, start, end, "integer out of range [0, 2^31-1]", false),
+            prompt_error(raw_input, start, end, "integer out of range [0, 2^31-1]", PromptMode::Error),
         SemanticError::TypeMismatch(expected, found) => {
-            prompt_error(raw_input, start, end, format!("mismatched types, expected {}, found {}", expected, found).as_str(), false)
+            prompt_error(raw_input, start, end, format!("mismatched types, expected {}, found {}", expected, found).as_str(), PromptMode::Error)
         },
         SemanticError::ExtraIndex(pos, ty) => {
-            prompt_error(raw_input, start, end, "extraneous index", false);
-            prompt_error(raw_input, pos.0, pos.1, format!("the base has type {}", ty).as_str(), false);
+            prompt_error(raw_input, start, end, "extraneous index", PromptMode::Error);
+            prompt_error(raw_input, pos.0, pos.1, format!("the base has type {}", ty).as_str(), PromptMode::Note);
         },
         SemanticError::ConstExpected => 
-            prompt_error(raw_input, start, end, "value is unknown at compile time, expected a constant", false),
+            prompt_error(raw_input, start, end, "value is unknown at compile time, expected a constant", PromptMode::Error),
         SemanticError::UndefinedIdent => 
-            prompt_error(raw_input, start, end, "use of undeclared identifier", false),
+            prompt_error(raw_input, start, end, "use of undeclared identifier", PromptMode::Error),
         SemanticError::MisuseOfFuncIdent(func_id) => {
-            prompt_error(raw_input, start, end, "identifier is a function; cannot be used like this", false);
+            prompt_error(raw_input, start, end, "identifier is a function; cannot be used like this", PromptMode::Error);
             let pos = func_id.token_pos;
-            prompt_error(raw_input, pos.0, pos.1, "originally defined here", false);
+            prompt_error(raw_input, pos.0, pos.1, "originally defined here", PromptMode::Note);
         },
         SemanticError::RedefOfIdent(id) => {
-            prompt_error(raw_input, start, end, "redefiniton of identifier", false);
+            prompt_error(raw_input, start, end, "redefiniton of identifier", PromptMode::Error);
             let pos = id.token_pos;
-            prompt_error(raw_input, pos.0, pos.1, "originally defined here", false);
+            prompt_error(raw_input, pos.0, pos.1, "originally defined here", PromptMode::Note);
+        },
+        SemanticError::DividedByZero => {
+            prompt_error(raw_input, start, end, "the divisor evaluates to 0", PromptMode::Error);
+        },
+        SemanticError::ArrayPartialDeref(ty) => {
+            prompt_error(raw_input, start, end, "partially dereferenced value can only be used as function argument", PromptMode::Error);
+            prompt_error(raw_input, 0, 0, format!("the expression has type {}", ty).as_str(), PromptMode::Note);
+        }
+        SemanticError::ConstUninit => {
+            prompt_error(raw_input, start, end, "constant must be initialized", PromptMode::Error);
+        },
+        SemanticError::ConstAssignment(pos) => {
+            prompt_error(raw_input, start, end, "assigning a constant value", PromptMode::Error);
+            prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
+        },
+        SemanticError::NegArrayBound(i) => {
+            prompt_error(raw_input, start, end, format!("array bound {} must not be negative", i).as_str(), PromptMode::Error);
         }
     };
 
@@ -280,17 +311,30 @@ pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &Semant
 #[derive(Debug)]
 pub enum Warning {
     ValueUndef,
+    VarUninit(TokenPos),
     IndexOutOfBound(i32, TokenPos, usize),
+    IntegerOverflow,
+    MissingRet(TokenPos),
 }
 
 pub fn warning(raw_input: &[u8], start: usize, end: usize, warning: &Warning) {
 
     match warning {
         Warning::ValueUndef =>
-            prompt_error(raw_input, start, end, "the value of this is undefined, using 0 as default", true),
+            prompt_error(raw_input, start, end, "the value of this is undefined, using 0 as default", PromptMode::Warning),
+        Warning::VarUninit(pos) => {
+            prompt_error(raw_input, start, end, "this variable may be uninitialized", PromptMode::Warning);
+            prompt_error(raw_input, pos.0, pos.1, "originally defined here", PromptMode::Note);
+        }
         Warning::IndexOutOfBound(index, pos, bound) => {
-            prompt_error(raw_input, start, end, format!("index value {} is out of bound", *index).as_str(), true);
-            prompt_error(raw_input, pos.0, pos.1, format!("the base has bound [0, {})", *bound).as_str(), true);
+            prompt_error(raw_input, start, end, format!("index value {} is out of bound", *index).as_str(), PromptMode::Warning);
+            prompt_error(raw_input, pos.0, pos.1, format!("the base has bound [0, {})", *bound).as_str(), PromptMode::Note);
         },
+        Warning::IntegerOverflow => 
+            prompt_error(raw_input, start, end, "evaluating this value yields integer overflow, defauting to wrapping", PromptMode::Warning),
+            Warning::MissingRet(pos) => {
+            prompt_error(raw_input, start, end, "non-void function does not return a value", PromptMode::Warning);
+            prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
+        }
     }
 }

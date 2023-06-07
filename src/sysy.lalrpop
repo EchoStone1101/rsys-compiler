@@ -1,5 +1,6 @@
 use crate::frontend::ast::*;
 use crate::error::*;
+use std::rc::Rc;
 
 //! The grammar for SYSY is as follows:
 //! 
@@ -7,7 +8,8 @@ use crate::error::*;
 //! Decl          ::= ConstDecl | VarDecl;
 //! ConstDecl     ::= "const" BType ConstDef {"," ConstDef} ";";
 //! BType         ::= "int";
-//! ConstDef      ::= IDENT {"[" ConstExp "]"} "=" ConstInitVal;
+//! ConstDef      ::= IDENT {"[" ConstExp "]"};
+//!                 | IDENT {"[" ConstExp "]"} "=" ConstInitVal;
 //! ConstInitVal  ::= ConstExp | "{" [ConstInitVal {"," ConstInitVal}] "}";
 //! VarDecl       ::= BType VarDef {"," VarDef} ";";
 //! VarDef        ::= IDENT {"[" ConstExp "]"}
@@ -72,17 +74,17 @@ ConstDecl: Box<ConstDecl> = "const" <btype: BType> <mut v: (<ConstDef> ",")*> <e
   Box::new(ConstDecl::new(btype, v))
 };
 
-ConstDef: Box<ConstDef> = <IDENT> <("[" <ConstExp> "]")*> "=" <ConstInitVal> => Box::new(ConstDef::new(<>));
+ConstDef: Box<ConstDef> = IDENT ("[" <ConstExp> "]")* ("=" <ConstInitVal>)? => Box::new(ConstDef::new(<>));
 
 BType: BType = "int" => BType::Int;
 
-ConstInitVal: Box<ConstInitVal> = {
-  ConstExp => Box::new(ConstInitVal::ConstExp(<>)),
+ConstInitVal: Rc<ConstInitVal> = {
+  ConstExp => Rc::new(ConstInitVal::ConstExp(<>)),
   "{" <mut v: (<ConstInitVal> ",")*> <e: ConstInitVal?> "}" => match e {
-    None => Box::new(ConstInitVal::ValList(v)),
+    None => Rc::new(ConstInitVal::ValList(v)),
     Some(e) => {
       v.push(e);
-      Box::new(ConstInitVal::ValList(v))
+      Rc::new(ConstInitVal::ValList(v))
     }
   }
 };
@@ -94,13 +96,13 @@ VarDecl: Box<VarDecl> = <btype: BType> <mut v: (<VarDef> ",")*> <e: VarDef> ";" 
 
 VarDef: Box<VarDef> = IDENT ("[" <ConstExp> "]")* ("=" <InitVal>)? => Box::new(VarDef::new(<>));
 
-InitVal: Box<InitVal> = {
-  Exp => Box::new(InitVal::Exp(<>)),
+InitVal: Rc<InitVal> = {
+  Exp => Rc::new(InitVal::Exp(<>)),
   "{" <mut v: (<InitVal> ",")*> <e: InitVal?> "}" => match e {
-    None => Box::new(InitVal::ValList(v)),
+    None => Rc::new(InitVal::ValList(v)),
     Some(e) => {
       v.push(e);
-      Box::new(InitVal::ValList(v))
+      Rc::new(InitVal::ValList(v))
     }
   }
 };
@@ -155,7 +157,7 @@ MatchedStmt: Box<Stmt> = {
   Block => Box::new(Stmt::Block(<>)),
   <l:@L> "break" <r:@R> ";" => Box::new(Stmt::Break((l, r))),
   <l:@L> "continue" <r:@R> ";" => Box::new(Stmt::Continue((l, r))),
-  "return" <Exp?> ";" => Box::new(Stmt::Ret(<>)),
+  <l:@L> "return" <exp:Exp?> <r:@R>";" => Box::new(Stmt::Ret(exp, (l, r))),
 };
 
 OpenStmt: Box<Stmt> = {

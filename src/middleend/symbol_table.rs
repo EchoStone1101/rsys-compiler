@@ -1,7 +1,8 @@
 //! Implements symbol table for SYSY.
 //! SYSY currently emulates strict C behavior. Consequently,
 //! it does not support any kind of overloading, or name mangling.
-//! All symbols with the same name must have only one type.
+//! All symbols (in the same scope) with the same name must have 
+//! only one type.
 
 #[allow(unused_imports)]
 use koopa::ir::*;
@@ -15,6 +16,13 @@ pub struct SymbolTable {
     symbols: HashMap<Ident, Vec<(usize, Symbol)>>,
     scope_stack: Vec<(usize, Ident)>,
     scope: usize,
+
+    /// A stack that stores the resuming BB in current
+    /// analysis. For now, this includes only a `while`
+    /// loop. When a `continue` or `break` terminates a
+    /// BB, it consults this stack to determine where to
+    /// jump to.
+    resume_bbs: Vec<BasicBlock>, 
 }
 
 impl SymbolTable {
@@ -35,13 +43,29 @@ impl SymbolTable {
         while let Some((version, name)) = self.scope_stack.last() {
             if *version > self.scope {
                 // Pop this symbol
-                self.symbols.remove(name).expect("no such symbol");
+                let popped = self.symbols.get_mut(name)
+                    .expect("[SYMTAB] no such symbol")
+                    .pop()
+                    .expect("[SYMTAB] no such symbol");
+                assert!(popped.0 == *version, "[SYMTAB] version mismatch");
                 self.scope_stack.pop();
             }
             else {
                 break
             }
         }
+    }
+
+    pub fn push_resume_bb(&mut self, resume_bb: BasicBlock) {
+        self.resume_bbs.push(resume_bb)
+    }
+
+    pub fn pop_resume_bb(&mut self) -> BasicBlock {
+        self.resume_bbs.pop().expect("[SYMTAB] pop_resume_bb() at empty stack")
+    }
+
+    pub fn get_resume_bb(&mut self) -> Option<BasicBlock> {
+        self.resume_bbs.last().map(|bb| *bb)
     }
 
     pub fn add(&mut self, raw_input: &[u8], ident: &Ident, symbol: Symbol) {
@@ -80,6 +104,18 @@ impl SymbolTable {
         }
         None
     }
+
+    pub fn replace(&mut self, ident: &Ident, new_sym: Symbol) -> Option<Symbol> {
+        if let Some(v) = self.symbols.get_mut(ident) {
+            if let Some((version, sym)) = v.last_mut() {
+                assert!(*version == self.scope, "[symtab]: replace must happen in the same scope");
+                let old_sym = *sym;
+                *sym = new_sym;
+                return Some(old_sym)
+            }
+        }
+        None
+    }
 }
 
 /// A SYSY semantic symbol.
@@ -87,5 +123,5 @@ impl SymbolTable {
 #[derive(Debug, Clone, Copy)]
 pub enum Symbol {
     Function(Function),
-    Value(Value, bool), // Value, isConst
+    Value(Value, bool, bool, bool), // Value, isConst, isInit, isGlobal
 }

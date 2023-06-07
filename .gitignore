@@ -1,3 +1,5 @@
 /target
 /debug
 /shared
+/vendor
+/.cargo
