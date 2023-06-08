@@ -5,6 +5,7 @@ use koopa::ir::*;
 use koopa::ir::builder_traits::*;
 use koopa::ir::entities::ValueData;
 use std::hash::{Hash, Hasher};
+use std::process::exit;
 use std::rc::Rc;
 use crate::error::{semantic_error, SemanticError, warning, Warning};
 use crate::middleend::{SymbolTable, Symbol};
@@ -719,7 +720,7 @@ impl FuncDef {
     fn func_def(self, raw_input: &[u8], program: &mut Program, sym_tab: &mut SymbolTable) {
         let params = &self.params;
 
-        if let Some(Symbol::Function(func)) = sym_tab.get(&self.ident) {
+        if let Some(Symbol::Function(func)) = sym_tab.get_func(&self.ident) {
             let new_func_data = program.func_mut(func);
 
             // Prepare entry block
@@ -796,11 +797,14 @@ impl FuncDef {
             }
 
             let entry = program.func(func).layout().entry_bb().expect("should have at least one non-empty entry");
-            let _non_target_bbs: Vec<BasicBlock> = program.func(func).dfg().bbs().iter()
+            let non_target_bbs: Vec<BasicBlock> = program.func(func).dfg().bbs().iter()
                 .filter(|(bb, data)| **bb != entry && data.used_by().is_empty())
                 .map(|(bb,_) | *bb)
                 .collect();
-            // assert!(non_target_bbs.is_empty(), "[AST] all but the entry BB should be used at least once");
+            if !non_target_bbs.is_empty() {
+                exit(12345)
+            }
+            assert!(non_target_bbs.is_empty(), "[AST] all but the entry BB should be used at least once");
 
             // Out of the scope
             sym_tab.pop();
@@ -1926,7 +1930,7 @@ impl UnaryExp {
             },
             UnaryExp::FuncCall(fid, args, pos) => {
                 // Check symbol table
-                let func_sym = sym_tab.get_ident(fid);
+                let func_sym = sym_tab.get_ident_func(fid);
                 if func_sym.is_none() {
                     semantic_error(raw_input, fid.token_pos.0, fid.token_pos.1,
                         &SemanticError::UndefinedIdent)
