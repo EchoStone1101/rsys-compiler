@@ -1,7 +1,7 @@
 use std::fs::{read_to_string, File};
 use std::io::{Result, Write};
 use lalrpop_util::{lalrpop_mod, ErrorRecovery};
-use koopa::ir::Program;
+use koopa::ir::{Program, FunctionData, Type};
 use koopa::back::KoopaGenerator;
 use clap::{Parser, ValueEnum};
 
@@ -10,7 +10,7 @@ pub mod middleend;
 pub mod error;
 
 use frontend::ast::CompUnit;
-use middleend::SymbolTable;
+use middleend::{SymbolTable, Symbol};
 use error::parse_general_error;
 
 lalrpop_mod!(sysy);
@@ -68,7 +68,84 @@ fn main() -> Result<()> {
             let mut sym_tab = SymbolTable::new();
 
             // First populate the symbol table with function
-            // declarations.
+            // declarations. These incluse user defined functions
+            // and SYSY library functions.
+            let lib_funcs = vec![
+
+                (
+                    "@getint".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@getint".into(), 
+                        vec![],
+                        Type::get_i32(),
+                    )))
+                ),
+
+                (
+                    "@getch".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@getch".into(), 
+                        vec![],
+                        Type::get_i32(),
+                    )))
+                ),
+
+                (
+                    "@getarray".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@getarray".into(), 
+                        vec![Type::get_pointer(Type::get_i32())],
+                        Type::get_i32(),
+                    )))
+                ),
+
+                (
+                    "@putint".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@putint".into(), 
+                        vec![Type::get_i32()],
+                        Type::get_unit(),
+                    )))
+                ),
+
+                (
+                    "@putch".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@putch".into(), 
+                        vec![Type::get_i32()],
+                        Type::get_unit(),
+                    )))
+                ),
+
+                (
+                    "@putarray".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@putarray".into(), 
+                        vec![Type::get_i32(), Type::get_pointer(Type::get_i32())],
+                        Type::get_unit(),
+                    )))
+                ),
+
+                (
+                    "@starttime".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@starttime".into(), 
+                        vec![],
+                        Type::get_unit(),
+                    )))
+                ),
+
+                (
+                    "@stoptime".to_string(),
+                    Symbol::Function(program.new_func(FunctionData::new(
+                        "@stoptime".into(), 
+                        vec![],
+                        Type::get_unit(),
+                    )))
+                ),
+            ];
+            sym_tab.init(&lib_funcs);
+
             ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
             // Then populate Program.
             ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);

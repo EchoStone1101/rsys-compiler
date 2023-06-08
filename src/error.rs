@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use std::fmt;
 use std::process::exit;
-use koopa::ir::Type;
+use koopa::ir::{Type, TypeKind};
 use crate::frontend::ast::{Ident, TokenPos};
 use lalrpop_util::{ErrorRecovery, ParseError};
 use lalrpop_util::lexer::Token;
@@ -257,7 +257,14 @@ pub enum SemanticError {
     ArrayPartialDeref(Type),
     ConstUninit,
     ConstAssignment(TokenPos),
-    NegArrayBound(i32),
+    NonPositiveArrayBound(i32),
+    ExtraBreak,
+    ExtraCont,
+    FunctionExpected(Ident),
+    ArgMismatch(usize, usize, TokenPos),
+    ValListTooDeep(usize),
+    ValListTooWide(usize, TokenPos, usize, usize),
+    ValListMisalign(usize, usize),
 }
 
 pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &SemanticError) -> ! {
@@ -266,7 +273,26 @@ pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &Semant
         SemanticError::IntegerOutOfRange => 
             prompt_error(raw_input, start, end, "integer out of range [0, 2^31-1]", PromptMode::Error),
         SemanticError::TypeMismatch(expected, found) => {
-            prompt_error(raw_input, start, end, format!("mismatched types, expected {}, found {}", expected, found).as_str(), PromptMode::Error)
+            prompt_error(raw_input, start, end, format!("mismatched types, expected {}, found {}", expected, found).as_str(), PromptMode::Error);
+            let hint = match (expected.kind(), found.kind()) {
+                (TypeKind::Pointer(t1), TypeKind::Pointer(t2)) => {
+                    match t2.kind() {
+                        TypeKind::Array(btype,_) => {
+                            if btype == t1 {
+                                true
+                            }
+                            else {
+                                false
+                            }
+                        },
+                        _ => false,
+                    }
+                },
+                _ => false,
+            };
+            if hint {
+                prompt_error(raw_input, 0, 0, "missing an array index", PromptMode::Note)
+            }
         },
         SemanticError::ExtraIndex(pos, ty) => {
             prompt_error(raw_input, start, end, "extraneous index", PromptMode::Error);
@@ -300,9 +326,52 @@ pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &Semant
             prompt_error(raw_input, start, end, "assigning a constant value", PromptMode::Error);
             prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
         },
-        SemanticError::NegArrayBound(i) => {
-            prompt_error(raw_input, start, end, format!("array bound {} must not be negative", i).as_str(), PromptMode::Error);
+        SemanticError::NonPositiveArrayBound(i) => {
+            prompt_error(raw_input, start, end, format!("array bound {} must be positive", i).as_str(), PromptMode::Error);
         }
+        SemanticError::ExtraBreak =>
+            prompt_error(raw_input, start, end, "\"break\" can only be used in a loop", PromptMode::Error),
+        SemanticError::ExtraCont =>
+            prompt_error(raw_input, start, end, "\"continue\" can only be used in a loop", PromptMode::Error),
+        SemanticError::FunctionExpected(id) => {
+            prompt_error(raw_input, start, end, "expected a function identifier here", PromptMode::Error);
+            let pos = id.token_pos;
+            prompt_error(raw_input, pos.0, pos.1, "but found this definition instead", PromptMode::Note);
+        },
+        SemanticError::ArgMismatch(expected, found, pos) => {
+            prompt_error(raw_input, start, end, format!(
+                "function expects {} argument(s), found {} instead",
+                *expected, *found
+            ).as_str(), PromptMode::Error);
+            if *pos == (0, 0) {
+                prompt_error(raw_input, pos.0, pos.1, "which is a library function", PromptMode::Note);
+            }
+            else {
+                prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
+            }
+        },
+        SemanticError::ValListTooDeep(idx) => {
+            prompt_error(raw_input, start, end, format!(
+                "value list deeper than array dimension at raw index {}",
+                *idx
+            ).as_str(), PromptMode::Error);
+        },
+        SemanticError::ValListTooWide(idx, pos, list_start, bound) => {
+            prompt_error(raw_input, start, end, format!(
+                "extraneous element at raw index {}",
+                *idx
+            ).as_str(), PromptMode::Error);
+            prompt_error(raw_input, pos.0, pos.1, format!(
+                "this value list starts at raw index {}, so it expects {} elements",
+                *list_start, *bound
+            ).as_str(), PromptMode::Note);
+        },
+        SemanticError::ValListMisalign(idx, align) => {
+            prompt_error(raw_input, start, end, format!(
+                "found value list at raw index {}, which is not a multiple of {}",
+                *idx, *align
+            ).as_str(), PromptMode::Error);
+        },
     };
 
     exit(-1)
@@ -315,6 +384,10 @@ pub enum Warning {
     IndexOutOfBound(i32, TokenPos, usize),
     IntegerOverflow,
     MissingRet(TokenPos),
+    RedunantIf(i32),
+    RedunantWhile,
+    DeadLoop,
+    UnreachedStmt,
 }
 
 pub fn warning(raw_input: &[u8], start: usize, end: usize, warning: &Warning) {
@@ -335,6 +408,31 @@ pub fn warning(raw_input: &[u8], start: usize, end: usize, warning: &Warning) {
             Warning::MissingRet(pos) => {
             prompt_error(raw_input, start, end, "non-void function does not return a value", PromptMode::Warning);
             prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
+        },
+        Warning::RedunantIf(cond) => {
+            let more = if *cond == 0 {
+                "so the if-branch is never taken"
+            }
+            else {
+                "so the if-branch is always taken"
+            };
+            prompt_error(raw_input, start, end, format!("the condition evaluates to {}, {}", *cond, more).as_str(),
+                PromptMode::Warning);
+        },
+        Warning::RedunantWhile => {
+            prompt_error(raw_input, start, end,
+                "the condition evaluates to 0, so the loop is never entered",
+                PromptMode::Warning);
+        },
+        Warning::DeadLoop => {
+            prompt_error(raw_input, start, end,
+                "this loop never terminates",
+                PromptMode::Warning);
+        },
+        Warning::UnreachedStmt => {
+            prompt_error(raw_input, start, end,
+                "unreachable statement",
+                PromptMode::Warning);
         }
     }
 }

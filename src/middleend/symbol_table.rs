@@ -17,17 +17,36 @@ pub struct SymbolTable {
     scope_stack: Vec<(usize, Ident)>,
     scope: usize,
 
-    /// A stack that stores the resuming BB in current
+    /// A stack that stores the resuming BBs in current
     /// analysis. For now, this includes only a `while`
     /// loop. When a `continue` or `break` terminates a
     /// BB, it consults this stack to determine where to
     /// jump to.
-    resume_bbs: Vec<BasicBlock>, 
+    /// The format is (ContBB, BreakBB).
+    resume_bbs: Vec<(BasicBlock, BasicBlock)>, 
 }
 
 impl SymbolTable {
+
     pub fn new() -> Self {
         Default::default()
+    }
+
+    /// Initialize with a set of predefined symbols.
+    /// Used to handle things like library functions.
+    pub fn init(&mut self, pre_def: &Vec<(String, Symbol)>) {
+        
+        assert!(self.symbols.is_empty() && self.scope == 0, "[SYMTAB] init() should only be called on empty table");
+
+        for (name, sym) in pre_def.iter() {
+            let ident = Ident { ident: name.clone(), token_pos: (0, 0) };
+            assert!(self.symbols.insert(ident, vec![(self.scope, *sym)]).is_none(), "[SYMTAB] `pre_def` is not unique");
+        }
+        
+        // Use a push to make sure these symbols are globally visible,
+        // but can also be shadowed.
+        // These symbols are never popped.
+        self.push();
     }
 
     /// Increment the scope count.
@@ -56,15 +75,15 @@ impl SymbolTable {
         }
     }
 
-    pub fn push_resume_bb(&mut self, resume_bb: BasicBlock) {
+    pub fn push_resume_bb(&mut self, resume_bb: (BasicBlock, BasicBlock)) {
         self.resume_bbs.push(resume_bb)
     }
 
-    pub fn pop_resume_bb(&mut self) -> BasicBlock {
+    pub fn pop_resume_bb(&mut self) -> (BasicBlock, BasicBlock) {
         self.resume_bbs.pop().expect("[SYMTAB] pop_resume_bb() at empty stack")
     }
 
-    pub fn get_resume_bb(&mut self) -> Option<BasicBlock> {
+    pub fn get_resume_bb(&self) -> Option<(BasicBlock, BasicBlock)> {
         self.resume_bbs.last().map(|bb| *bb)
     }
 

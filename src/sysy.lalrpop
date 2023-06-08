@@ -80,11 +80,11 @@ BType: BType = "int" => BType::Int;
 
 ConstInitVal: Rc<ConstInitVal> = {
   ConstExp => Rc::new(ConstInitVal::ConstExp(<>)),
-  "{" <mut v: (<ConstInitVal> ",")*> <e: ConstInitVal?> "}" => match e {
-    None => Rc::new(ConstInitVal::ValList(v)),
+  <l:@L> "{" <mut v: (<ConstInitVal> ",")*> <e: ConstInitVal?> "}" <r:@R> => match e {
+    None => Rc::new(ConstInitVal::ValList(v, (l, r))),
     Some(e) => {
       v.push(e);
-      Rc::new(ConstInitVal::ValList(v))
+      Rc::new(ConstInitVal::ValList(v, (l, r)))
     }
   }
 };
@@ -98,11 +98,11 @@ VarDef: Box<VarDef> = IDENT ("[" <ConstExp> "]")* ("=" <InitVal>)? => Box::new(V
 
 InitVal: Rc<InitVal> = {
   Exp => Rc::new(InitVal::Exp(<>)),
-  "{" <mut v: (<InitVal> ",")*> <e: InitVal?> "}" => match e {
-    None => Rc::new(InitVal::ValList(v)),
+  <l:@L> "{" <mut v: (<InitVal> ",")*> <e: InitVal?> "}" <r:@R> => match e {
+    None => Rc::new(InitVal::ValList(v, (l, r))),
     Some(e) => {
       v.push(e);
-      Rc::new(InitVal::ValList(v))
+      Rc::new(InitVal::ValList(v, (l, r)))
     }
   }
 };
@@ -137,8 +137,8 @@ FuncFParam: Box<FuncFParam> = <BType> <IDENT> <("[" "]" <("[" <ConstExp> "]")*>)
 Block: Box<Block> = "{" <BlockItem*> "}" => Box::new(Block { block_item: <> });
 
 BlockItem: Box<BlockItem> = {
-  Decl => Box::new(BlockItem::Decl(<>)),
-  Stmt => Box::new(BlockItem::Stmt(<>)),
+  <l:@L> <decl: Decl> <r:@R> => Box::new(BlockItem::Decl(decl, (l, r))),
+  <l:@L> <stmt: Stmt> <r:@R> => Box::new(BlockItem::Stmt(stmt, (l, r))),
 };
 
 Stmt: Box<Stmt> = {
@@ -147,8 +147,8 @@ Stmt: Box<Stmt> = {
 };
 
 MatchedStmt: Box<Stmt> = {
-  "if" "(" <exp: Exp> ")" <if_stmt: MatchedStmt> "else" <else_stmt: MatchedStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt))),
-  "while" "(" <Exp> ")" <MatchedStmt> => Box::new(Stmt::While(<>)),
+  <l:@L> "if" "(" <exp: Exp> ")" <r:@R> <if_stmt: MatchedStmt> "else" <else_stmt: MatchedStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt), (l, r))),
+  <l:@L> "while" "(" <exp: Exp> ")" <r:@R> <stmt: MatchedStmt> => Box::new(Stmt::While(exp, stmt, (l, r))),
   // Other statements
   // Note that it is OK to have a Block here which can contain "if"s, because a Block
   // contains "{" and "}" that set the boundary.
@@ -161,9 +161,9 @@ MatchedStmt: Box<Stmt> = {
 };
 
 OpenStmt: Box<Stmt> = {
-  "if" "(" <exp: Exp> ")" <stmt: Stmt> => Box::new(Stmt::If(exp, stmt, None)),
-  "if" "(" <exp: Exp> ")" <if_stmt: MatchedStmt> "else" <else_stmt: OpenStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt))),
-  "while" "(" <Exp> ")" <OpenStmt> => Box::new(Stmt::While(<>)),
+  <l:@L> "if" "(" <exp: Exp> ")" <r:@R> <stmt: Stmt> => Box::new(Stmt::If(exp, stmt, None, (l, r))),
+  <l:@L> "if" "(" <exp: Exp> ")" <r:@R> <if_stmt: MatchedStmt> "else" <else_stmt: OpenStmt> => Box::new(Stmt::If(exp, if_stmt, Some(else_stmt), (l, r))),
+  <l:@L> "while" "(" <exp: Exp> ")" <r:@R> <stmt: OpenStmt> => Box::new(Stmt::While(exp, stmt, (l, r))),
 };
 
 Exp: Box<Exp> = <l:@L> <exp:LOrExp> <r:@R> => Box::new(Exp::LOrExp(exp, (l, r)));
