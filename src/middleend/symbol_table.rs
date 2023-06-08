@@ -24,8 +24,6 @@ pub struct SymbolTable {
     /// jump to.
     /// The format is (ContBB, BreakBB).
     resume_bbs: Vec<(BasicBlock, BasicBlock)>, 
-
-    funcs: HashMap<Ident, Symbol>,
 }
 
 impl SymbolTable {
@@ -37,14 +35,17 @@ impl SymbolTable {
     /// Initialize with a set of predefined symbols.
     /// Used to handle things like library functions.
     pub fn init(&mut self, pre_def: &Vec<(String, Symbol)>) {
-
-        // TODO: fix this
         assert!(self.symbols.is_empty() && self.scope == 0, "[SYMTAB] init() should only be called on empty table");
 
         for (name, sym) in pre_def.iter() {
             let ident = Ident { ident: name.clone(), token_pos: (0, 0) };
-            assert!(self.funcs.insert(ident, *sym).is_none(), "[SYMTAB] `pre_def` is not unique");
+            assert!(self.symbols.insert(ident, vec![(self.scope, *sym)]).is_none(), "[SYMTAB] `pre_def` is not unique");
         }
+        
+        // Use a push to make sure these symbols are globally visible,
+        // but can also be shadowed.
+        // These symbols are never popped.
+        self.push();
     }
 
     /// Increment the scope count.
@@ -86,15 +87,6 @@ impl SymbolTable {
     }
 
     pub fn add(&mut self, raw_input: &[u8], ident: &Ident, symbol: Symbol) {
-        if matches!(symbol, Symbol::Function(_)) {
-            if let Some((id, _)) = self.funcs.get_key_value(ident) {
-                semantic_error(raw_input, ident.token_pos.0, ident.token_pos.1,
-                    &SemanticError::RedefOfIdent(id.clone()))
-            }
-            _ = self.funcs.insert(ident.clone(), symbol);
-            return;
-        }
-
         if let Some((id, versioned_symbol)) = self.symbols.get_key_value(&ident) {
             if !versioned_symbol.is_empty() {
                 assert!(versioned_symbol.last().unwrap().0 <= self.scope);
@@ -113,24 +105,11 @@ impl SymbolTable {
         self.scope_stack.push((self.scope, ident.clone()));
     }
 
-    /// TODO: clean this up
-    pub fn get_func(&self, ident: &Ident) -> Option<Symbol> {
-        self.funcs.get(ident).cloned()
-    }
-
     pub fn get(&self, ident: &Ident) -> Option<Symbol> {
         if let Some(v) = self.symbols.get(&ident) {
             if let Some((_, sym)) = v.last() {
                 return Some(*sym)
             }
-        }
-        None
-    }
-
-    /// TODO: clean this up
-    pub fn get_ident_func(&self, ident: &Ident) -> Option<(Symbol, Ident)> {
-        if let Some((id, sym)) = self.funcs.get_key_value(ident) {
-            return Some((*sym, id.clone()))
         }
         None
     }
