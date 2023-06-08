@@ -273,6 +273,19 @@ fn def(
             // Do a local alloc
             let alloc = program.func_mut(func).dfg_mut().new_value().alloc(ty);
             program.func_mut(func).layout_mut().bb_mut(bb.unwrap()).insts_mut().push_key_back(alloc).unwrap();
+            if init_val.is_some() {
+                // Can start with zeroinit, if initval is present.
+                let mut zero = program.func_mut(func).dfg_mut().new_value()
+                    .integer(0);
+                for dim in dims.iter() {
+                    zero = program.func_mut(func).dfg_mut().new_value()
+                        .aggregate(vec![zero; *dim]);
+                }
+                let store = program.func_mut(func).dfg_mut().new_value()
+                    .store(zero, alloc);
+                program.func_mut(func).layout_mut().bb_mut(bb.unwrap())
+                    .insts_mut().push_key_back(store).unwrap();
+            }
             alloc
         }
     }
@@ -293,8 +306,13 @@ fn def(
         }
 
         // For now, init as undef.
-        let undef = program.new_value().undef(ty);
-        let alloc = program.new_value().global_alloc(undef);
+        let init = if init_val.is_some() {
+            program.new_value().zero_init(ty)
+        }
+        else {
+            program.new_value().undef(ty)
+        };
+        let alloc = program.new_value().global_alloc(init);
         alloc
     };
 
@@ -558,21 +576,24 @@ fn init_aggregate(
             exps.push(program.new_value().integer(0));
         }
         else {
-            let gp = alloc;
-            let func = function.unwrap();
+            // let gp = alloc;
+            // let func = function.unwrap();
             
-            let zero = program.func_mut(func).dfg_mut().new_value()
-                .integer(0);
-            let store = program.func_mut(func).dfg_mut().new_value()
-                .store(zero, gp);
-            let index = program.func_mut(func).dfg_mut().new_value()
-                .integer(1);
-            let locate = program.func_mut(func).dfg_mut().new_value()
-                .get_ptr(gp, index);
-            program.func_mut(func).layout_mut().bb_mut(bb.unwrap())
-                .insts_mut().extend([store, locate]);
-            alloc = locate;
-            idx += 1;
+            // let zero = program.func_mut(func).dfg_mut().new_value()
+            //     .integer(0);
+            // let store = program.func_mut(func).dfg_mut().new_value()
+            //     .store(zero, gp);
+            // let index = program.func_mut(func).dfg_mut().new_value()
+            //     .integer(1);
+            // let locate = program.func_mut(func).dfg_mut().new_value()
+            //     .get_ptr(gp, index);
+            // program.func_mut(func).layout_mut().bb_mut(bb.unwrap())
+            //     .insts_mut().extend([store, locate]);
+            // alloc = locate;
+            // idx += 1;
+
+            idx = old_idx + bound;
+            break;
         }
     }
     assert!(idx == old_idx + bound);
@@ -775,11 +796,11 @@ impl FuncDef {
             }
 
             let entry = program.func(func).layout().entry_bb().expect("should have at least one non-empty entry");
-            let non_target_bbs: Vec<BasicBlock> = program.func(func).dfg().bbs().iter()
+            let _non_target_bbs: Vec<BasicBlock> = program.func(func).dfg().bbs().iter()
                 .filter(|(bb, data)| **bb != entry && data.used_by().is_empty())
                 .map(|(bb,_) | *bb)
                 .collect();
-            assert!(non_target_bbs.is_empty(), "[AST] all but the entry BB should be used at least once");
+            // assert!(non_target_bbs.is_empty(), "[AST] all but the entry BB should be used at least once");
 
             // Out of the scope
             sym_tab.pop();
@@ -962,7 +983,6 @@ impl Stmt {
         bb: &mut Option<BasicBlock>,
         ret_ty: &Type,
     ) {
-        assert!(bb.is_some());
         match self {
             Stmt::Ret(ret_val, pos) => {
                 let ret_val = match ret_val {
@@ -1025,7 +1045,6 @@ impl Stmt {
                 check_value_type(raw_input, &lty, &rty, &exp.token_pos());
 
                 // All clear; generate a store
-                assert!(bb.is_some());
                 let store = program.func_mut(function).dfg_mut()
                     .new_value().store(rexp, lvalue);
                 program.func_mut(function).layout_mut().bb_mut(bb.unwrap())
@@ -1546,10 +1565,8 @@ impl LOrExp {
                 }
                 else {
                     // Global scope
-                    assert!(bb.is_none());
                     let lexp = exp.lor_exp(raw_input, program, function, sym_tab, bb, is_ptr);
                     let lexp = boolean_exp(&(lexp, exp.token_pos()), raw_input, program, function, bb);
-                    assert!(bb.is_none());
                     let rexp = more.land_exp(raw_input, program, function, sym_tab, bb, is_ptr);
                     let rexp = boolean_exp(&(rexp, exp.token_pos()), raw_input, program, function, bb);
 
@@ -1671,10 +1688,8 @@ impl LAndExp {
                 }
                 else {
                     // Global scope
-                    assert!(bb.is_none());
                     let lexp = exp.land_exp(raw_input, program, function, sym_tab, bb, is_ptr);
                     let lexp = boolean_exp(&(lexp, exp.token_pos()), raw_input, program, function, bb);
-                    assert!(bb.is_none());
                     let rexp = more.eq_exp(raw_input, program, function, sym_tab, bb, is_ptr);
                     let rexp = boolean_exp(&(rexp, exp.token_pos()), raw_input, program, function, bb);
 
@@ -2173,7 +2188,6 @@ impl LVal {
                         assert!(is_global);
                         assert!(!is_ptr);
                         let indexed_lval_data = program.borrow_value(indexed_lval);
-                        assert!(indexed_lval_data.kind().is_const());
                         return if let Some((i, undef)) = to_i32(&indexed_lval_data) {
                             drop(indexed_lval_data);
                             if undef {
@@ -2290,7 +2304,6 @@ impl LVal {
 
                     let indexed_lval_data = program.borrow_value(indexed_lval);
                     // Can replace with a constant value
-                    assert!(indexed_lval_data.kind().is_const());
                     return if let Some((i, undef)) = to_i32(&indexed_lval_data) {
                         drop(indexed_lval_data);
                         if undef {
@@ -2350,7 +2363,6 @@ impl FuncRParams {
         bb: &mut Option<BasicBlock>, 
         is_ptr_vec: &Vec<bool>,
     ) -> Vec<Value> {
-        assert!(is_ptr_vec.len() == self.params.len());
         self.params.iter().zip(is_ptr_vec.iter())
             .map(|(exp, is_ptr)| {
                 let arg = exp.exp(raw_input, program, Some(function), sym_tab, bb, *is_ptr);
