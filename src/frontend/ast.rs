@@ -6,7 +6,7 @@ use koopa::ir::builder_traits::*;
 use koopa::ir::entities::ValueData;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use crate::error::{semantic_error, SemanticError, warning, Warning, custom_exit, custom_assert};
+use crate::error::{semantic_error, SemanticError, warning, Warning};
 use crate::middleend::{SymbolTable, Symbol};
 
 #[derive(Debug)]
@@ -385,7 +385,7 @@ fn def(
                                 }
                             }
                         }
-                        custom_assert(exps.len() == 1, line!());
+                        assert!(exps.len() == 1);
                         init = *exps.last().unwrap();
                     }
                 },
@@ -460,7 +460,7 @@ fn init_single(
                 return Some(program.new_value().integer(i));
             }
             else {
-                custom_exit(line!())
+                unreachable!()
             }
         }
         else {
@@ -470,7 +470,7 @@ fn init_single(
                 return Some(program.new_value().integer(i));
             }
             else {
-                custom_exit(line!())
+                unreachable!()
             }
         }
     }
@@ -484,7 +484,7 @@ fn init_single(
         None
     }
     else {
-        custom_exit(line!())
+        unreachable!()
     }
 }
 
@@ -556,7 +556,7 @@ fn init_aggregate(
             let gp = alloc;
             let func = function.unwrap();
             
-            custom_assert(eval_exp.is_none(), line!());
+            assert!(eval_exp.is_none());
             let index = program.func_mut(func).dfg_mut().new_value()
                 .integer((next_idx - idx) as i32);
             let locate = program.func_mut(func).dfg_mut().new_value()
@@ -568,7 +568,7 @@ fn init_aggregate(
         }
         
     }
-    custom_assert(idx <= old_idx + bound, line!());
+    assert!(idx <= old_idx + bound);
     for _ in idx..old_idx + bound {
         // The val-list is shorter than array, patch up with zeroes
         if is_const {
@@ -596,9 +596,9 @@ fn init_aggregate(
             break;
         }
     }
-    custom_assert(idx == old_idx + bound, line!());
+    assert!(idx == old_idx + bound);
     if is_const {
-        custom_assert(exps.len() == bound, line!());
+        assert!(exps.len() == bound);
         let agg = program.new_value().aggregate(exps);
         (Some(agg), idx)
     }
@@ -756,7 +756,7 @@ impl FuncDef {
             let mut bb = Some(entry);
             self.block.block(raw_input, program, func, sym_tab, &mut bb, &ret_ty);
 
-            custom_assert(sym_tab.get_resume_bb().is_none(), line!());
+            assert!(sym_tab.get_resume_bb().is_none());
 
             // Check for missing `return`
             // which boils down to checking whether `bb` is None.
@@ -800,13 +800,13 @@ impl FuncDef {
                 .filter(|(bb, data)| **bb != entry && data.used_by().is_empty())
                 .map(|(bb,_) | *bb)
                 .collect();
-            custom_assert(non_target_bbs.is_empty(), line!());
+            assert!(non_target_bbs.is_empty(), "[AST] all but the entry BB should be used at least once");
 
             // Out of the scope
             sym_tab.pop();
         }
         else {
-            custom_exit(line!())
+            unreachable!()
         }
     }
 }
@@ -1024,7 +1024,7 @@ impl Stmt {
                 let lvalue = lval.lval(raw_input, program, Some(function), sym_tab, bb, true, false);
 
                 let mut lty = match sym_tab.get(&lval.ident).expect("ident must be defined") {
-                    Symbol::Function(_) => custom_exit(line!()),
+                    Symbol::Function(_) => unreachable!(),
                     Symbol::Value(_,_,_,_) => {
                         if let Some(data) = program.func(function).dfg().values().get(&lvalue) {
                             data.ty().clone()
@@ -1040,7 +1040,7 @@ impl Stmt {
                 // `lty` should be a pointer
                 match lty.kind() {
                     TypeKind::Array(btype,_) | TypeKind::Pointer(btype) => lty = btype.clone(),
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 }          
                 check_value_type(raw_input, &lty, &rty, &exp.token_pos());
 
@@ -1121,7 +1121,7 @@ impl Stmt {
                     None => {
                         if_end_bb.is_none() && else_end_bb.is_none()
                     },
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 };
 
                 // Finally, a `if` terminates if both branches terminate
@@ -1556,7 +1556,7 @@ impl LOrExp {
                         (None, Some(0)) | (Some(0), None) | (None, None) => {
                             or_calc
                         },
-                        _ => custom_exit(line!()),
+                        _ => unreachable!(),
                     };
                     // Done
                     program.func_mut(func).layout_mut().bbs_mut().push_key_back(or_done).unwrap();
@@ -1679,7 +1679,7 @@ impl LAndExp {
                         (None, Some(1)) | (Some(1), None) | (None, None) => {
                             and_calc
                         },
-                        _ => custom_exit(line!()),
+                        _ => unreachable!(),
                     };
                     // Done
                     program.func_mut(func).layout_mut().bbs_mut().push_key_back(and_done).unwrap();
@@ -1729,7 +1729,7 @@ impl EqExp {
                 let op = match self {
                     EqExp::Eq(_,_,_) => BinaryOp::Eq,
                     EqExp::Neq(_,_,_) => BinaryOp::NotEq,
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 };
                 let args = (op, lexp, rexp, exp.token_pos(), more.token_pos(), *pos);
                 binary_exp(&args, raw_input, program, function, bb)
@@ -1772,7 +1772,7 @@ impl RelExp {
                     RelExp::Gt(_,_,_) => BinaryOp::Gt,
                     RelExp::Le(_,_,_) => BinaryOp::Le,
                     RelExp::Ge(_,_,_) => BinaryOp::Ge,
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 };
                 let args = (op, lexp, rexp, exp.token_pos(), more.token_pos(), *pos);
                 binary_exp(&args, raw_input, program, function, bb)
@@ -1810,7 +1810,7 @@ impl AddExp {
                 let op = match self {
                     AddExp::Add(_,_,_) => BinaryOp::Add,
                     AddExp::Sub(_,_,_) => BinaryOp::Sub,
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 };
                 let args = (op, lexp, rexp, exp.token_pos(), more.token_pos(), *pos);
                 binary_exp(&args, raw_input, program, function, bb)
@@ -1850,7 +1850,7 @@ impl MulExp {
                     MulExp::Mul(_,_,_) => (BinaryOp::Mul, false),
                     MulExp::Div(_,_,_) => (BinaryOp::Div, true),
                     MulExp::Rem(_,_,_) => (BinaryOp::Mod, true),
-                    _ => custom_exit(line!()),
+                    _ => unreachable!(),
                 };
                 if is_div {
                     let rexp_val = if let Some(func) = function {
@@ -2112,13 +2112,10 @@ impl LVal {
                         ty = btype.clone();
                         
                         if is_const {
-                            custom_assert(is_global, line!());
+                            assert!(is_global);
                             match program.borrow_value(indexed_lval).kind() {
                                 ValueKind::GlobalAlloc(alloc) => indexed_lval = alloc.init().clone(),
-                                _ => {
-                                    custom_exit(line!());
-                                    // panic!("[AST] Local const Lavl should always be a GlobalAlloc")
-                                },
+                                _ => panic!("[AST] Local const Lavl should always be a GlobalAlloc"),
                             }
                         }
                         if let TypeKind::Pointer(_) = btype.kind() {
@@ -2128,8 +2125,7 @@ impl LVal {
                         }
                     }
                     else {
-                        custom_exit(line!());
-                        // panic!("[AST] Type of any ident should always be pointer")
+                        panic!("[AST] Type of any ident should always be pointer")
                     }
                     let btype = ty.clone();
 
@@ -2141,6 +2137,8 @@ impl LVal {
                     let mut ptr_san_check = false;
 
                     for exp in self.indices.iter() {
+                        is_const = false;
+                        
                         let index = exp.exp(raw_input, program, function, sym_tab, bb, 
                             false /* The index is never a pointer */);
                         let index_data = program.func(func).dfg().value(index);
@@ -2148,8 +2146,8 @@ impl LVal {
 
                         match ty.kind() {
                             TypeKind::Pointer(btype) => {
-                                custom_assert(!is_const, line!());
-                                custom_assert(!ptr_san_check, line!());
+                                assert!(!is_const);
+                                assert!(!ptr_san_check, "[lval] base type of double pointer should not occur");
                                 ty = btype.clone();
                                 let locate = program.func_mut(func).dfg_mut().new_value()
                                     .get_ptr(*insts.last().unwrap_or(&lval), index);
@@ -2189,8 +2187,8 @@ impl LVal {
 
                     if is_const {
                         // Can replace with a constant value
-                        custom_assert(is_global, line!());
-                        custom_assert(!is_ptr, line!());
+                        assert!(is_global);
+                        assert!(!is_ptr);
                         let indexed_lval_data = program.borrow_value(indexed_lval);
                         return if let Some((i, undef)) = to_i32(&indexed_lval_data) {
                             drop(indexed_lval_data);
@@ -2255,15 +2253,11 @@ impl LVal {
                         ty = btype.clone();
                         match program.borrow_value(indexed_lval).kind() {
                             ValueKind::GlobalAlloc(alloc) => indexed_lval = alloc.init().clone(),
-                            _ => {
-                                custom_exit(line!());
-                                // panic!("[AST] Global LVal should always be a GlobalAlloc")
-                            },
+                            _ => panic!("[AST] Global LVal should always be a GlobalAlloc"),
                         }
                     }
                     else {
-                        custom_exit(line!());
-                        // panic!("[AST] Type of any ident should always be pointer")
+                        panic!("[AST] Type of any ident should always be pointer")
                     }
                     let btype = ty.clone();
                     if !is_init && self.indices.is_empty() {
@@ -2278,7 +2272,7 @@ impl LVal {
                         check_value_type(raw_input, &Type::get_i32(), index_data.ty(), &exp.token_pos());
 
                         match ty.kind() {
-                            TypeKind::Pointer(_) => custom_exit(line!()),
+                            TypeKind::Pointer(_) => unreachable!(),
                             TypeKind::Array(btype, bound) => {
                                 if let Some((index, _)) = to_i32(&index_data) {
                                     let pos = exp.token_pos();
@@ -2292,7 +2286,7 @@ impl LVal {
                                         indexed_lval = agg.elems().get(index as usize).unwrap().clone();
                                     }
                                     else {
-                                        custom_exit(line!())
+                                        unreachable!()
                                     }
                                 }
                                 else {

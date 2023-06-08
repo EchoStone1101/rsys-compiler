@@ -9,15 +9,6 @@ use lalrpop_util::{ErrorRecovery, ParseError};
 use lalrpop_util::lexer::Token;
 use colored::*;
 
-pub fn custom_exit(code: u32) -> ! {
-    exit(code as i32)
-}
-
-pub fn custom_assert(cond: bool, code: u32) {
-    if !cond {
-        exit(code as i32)
-    }
-}
 
 #[derive(Debug)]
 struct Pos {
