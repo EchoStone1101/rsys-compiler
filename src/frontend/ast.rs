@@ -1111,12 +1111,14 @@ impl Stmt {
                     Some(0) => {
                         warning(raw_input, pos.0, pos.1,
                             &Warning::RedunantIf(0));
-                        if_end_bb.is_none()
+                        // else_end_bb.is_none()
+                        if_end_bb.is_none() && else_end_bb.is_none()
                     },
                     Some(i) if i != 0 => {
                         warning(raw_input, pos.0, pos.1,
                             &Warning::RedunantIf(i));
-                        else_end_bb.is_none()
+                        // if_end_bb.is_none() 
+                        if_end_bb.is_none() && else_end_bb.is_none()
                     },
                     None => {
                         if_end_bb.is_none() && else_end_bb.is_none()
@@ -2137,8 +2139,7 @@ impl LVal {
                     let mut ptr_san_check = false;
 
                     for exp in self.indices.iter() {
-                        is_const = false;
-                        
+
                         let index = exp.exp(raw_input, program, function, sym_tab, bb, 
                             false /* The index is never a pointer */);
                         let index_data = program.func(func).dfg().value(index);
