@@ -3,20 +3,24 @@ use std::io::{Result, Write};
 use lalrpop_util::{lalrpop_mod, ErrorRecovery};
 use koopa::ir::{Program, FunctionData, Type};
 use koopa::back::KoopaGenerator;
+use koopa::opt::*;
 use clap::{Parser, ValueEnum};
 
 pub mod frontend;
 pub mod middleend;
+pub mod backend;
 pub mod error;
 
 use frontend::ast::CompUnit;
-use middleend::{SymbolTable, Symbol};
+use middleend::{SymbolTable, Symbol, opt};
 use error::parse_general_error;
 
 lalrpop_mod!(sysy);
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author = "echostone<EchoStone@gmail.com>")]
+#[command(about = "A Rust compiler for SYSY, rich in error prompts.")]
+#[command(version, long_about = None)]
 struct Cli {
     /// Type of the object code
     #[arg(value_enum)]
@@ -149,6 +153,14 @@ fn main() -> Result<()> {
             ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
             // Then populate Program.
             ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);
+
+            // Optionally apply optimizaton passes
+            let mut passman = PassManager::new();
+            passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
+            // passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
+            // Apply twice deliberately
+            // passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
+            passman.run_passes(&mut program);
 
             let mut gen = KoopaGenerator::new(Vec::new());
             gen.generate_on(&program).unwrap();

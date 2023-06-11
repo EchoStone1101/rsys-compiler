@@ -263,6 +263,7 @@ pub enum SemanticError {
     ExtraCont,
     FunctionExpected(Ident),
     ArgMismatch(usize, usize, TokenPos),
+    ValListExpected,
     ValListTooDeep(usize),
     ValListTooWide(usize, TokenPos, usize, usize),
     ValListMisalign(usize, usize),
@@ -351,6 +352,10 @@ pub fn semantic_error(raw_input: &[u8], start: usize, end: usize, error: &Semant
                 prompt_error(raw_input, pos.0, pos.1, "which is defined here", PromptMode::Note);
             }
         },
+        SemanticError::ValListExpected => {
+            prompt_error(raw_input, start, end, "expecting a value list for array initialization", PromptMode::Error);
+            prompt_error(raw_input, 0, 0, "add brackets around", PromptMode::Note);
+        },
         SemanticError::ValListTooDeep(idx) => {
             prompt_error(raw_input, start, end, format!(
                 "value list deeper than array dimension at raw index {}",
@@ -387,7 +392,6 @@ pub enum Warning {
     MissingRet(TokenPos),
     RedunantIf(i32),
     RedunantWhile,
-    DeadLoop,
     UnreachedStmt,
 }
 
@@ -423,11 +427,6 @@ pub fn warning(raw_input: &[u8], start: usize, end: usize, warning: &Warning) {
         Warning::RedunantWhile => {
             prompt_error(raw_input, start, end,
                 "the condition evaluates to 0, so the loop is never entered",
-                PromptMode::Warning);
-        },
-        Warning::DeadLoop => {
-            prompt_error(raw_input, start, end,
-                "this loop never terminates",
                 PromptMode::Warning);
         },
         Warning::UnreachedStmt => {
