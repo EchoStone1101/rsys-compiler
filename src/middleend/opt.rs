@@ -45,7 +45,10 @@ impl FunctionPass for ElimUnreachableBlock {
 
         // Mark all reachable blocks
         while let Some(bb) = to_visit.pop_front() {
-            reachable.insert(bb);
+            if !reachable.insert(bb) {
+                // Visisted
+                continue;
+            }
             let last_inst = *data.layout_mut().bb_mut(bb).insts().back_key()
                 .expect("[OPT] encountered empty BB");
             let mut new_target = None;
