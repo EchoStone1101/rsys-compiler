@@ -317,6 +317,11 @@ impl FunctionPass for ElimUnusedValue {
             return;
         }
 
+        let all_bbs: Vec<BasicBlock> = data.dfg().bbs()
+            .iter()
+            .map(|(bb, _)| *bb)
+            .collect();
+
         // Start from all unreferenced values and do a topological sort.
         // Unreferenced values are unused, except for:
         // - Control-flow instructions
@@ -340,58 +345,164 @@ impl FunctionPass for ElimUnusedValue {
             .map(|(v,_)| *v)
         );
 
-        while let Some(u) = unused.pop_front() {
+        while !unused.is_empty() {
+            while let Some(u) = unused.pop_front() {
 
-            if !data.dfg().value(u).used_by().is_empty() {
-                continue
-            }
-            if let Some(bb) = data.layout().parent_bb(u) {
-                
-                _ = data.layout_mut().bb_mut(bb).insts_mut().remove(&u);
-            }
-            let udata = data.dfg().value(u);
-            match udata.kind() {
-                ValueKind::Aggregate(_) | ValueKind::Alloc(_) |
-                ValueKind::FuncArgRef(_) | ValueKind::GlobalAlloc(_) |
-                ValueKind::Integer(_) | ValueKind::Undef(_) |
-                ValueKind::ZeroInit(_) => {/* Used no more values. */},
-                ValueKind::BlockArgRef(_bar) => {
-                    let _bb = data.layout().parent_bb(u)
-                        .expect("[OPT] BlockArgRef must be in a BB");
-                    // TODO: for predecessor blocks, the corresponding parameter
-                    // in the jump/branch instruction should be marked as unused. 
+                if let Some(udata) = data.dfg().values().get(&u) {
+                    if !udata.used_by().is_empty() {
+                        continue
+                    }
+                }
+                else {
+                    // Global values; just skip
                     continue
-                },
-                ValueKind::Call(_) => {
-                    // A function call is never unused.
-                    continue
-                },
-                ValueKind::Branch(_) | ValueKind::Jump(_) |
-                ValueKind::Return(_) => unreachable!(),
-                ValueKind::Binary(b) => {
-                    unused.push_back(b.lhs());
-                    unused.push_back(b.lhs());
-                },
-                ValueKind::GetElemPtr(gep) => {
-                    unused.push_back(gep.src());
-                    unused.push_back(gep.index());
-                },
-                ValueKind::GetPtr(gp) => {
-                    unused.push_back(gp.src());
-                    unused.push_back(gp.index());
-                },
-                ValueKind::Load(ld) => {
-                    unused.push_back(ld.src());
-                },
-                ValueKind::Store(st) => {
-                    unused.push_back(st.dest());
-                    unused.push_back(st.value());
+                }
+
+                let udata = data.dfg().value(u);
+                match udata.kind() {
+                    ValueKind::Aggregate(_) | ValueKind::Alloc(_) |
+                    ValueKind::FuncArgRef(_) | ValueKind::ZeroInit(_) |
+                    ValueKind::Integer(_) | ValueKind::Undef(_) 
+                        => {/* Used no more values. */},
+                    ValueKind::BlockArgRef(_) => {
+                        // This is handled later
+                        continue
+                    },
+                    ValueKind::Call(_) => {
+                        // A function call is never unused.
+                        continue
+                    },
+                    ValueKind::Branch(_) | ValueKind::Jump(_) |
+                    ValueKind::Return(_) | ValueKind::GlobalAlloc(_)
+                        => unreachable!(),
+                    ValueKind::Binary(b) => {
+                        unused.push_back(b.lhs());
+                        unused.push_back(b.lhs());
+                    },
+                    ValueKind::GetElemPtr(gep) => {
+                        unused.push_back(gep.src());
+                        unused.push_back(gep.index());
+                    },
+                    ValueKind::GetPtr(gp) => {
+                        unused.push_back(gp.src());
+                        unused.push_back(gp.index());
+                    },
+                    ValueKind::Load(ld) => {
+                        unused.push_back(ld.src());
+                    },
+                    ValueKind::Store(st) => {
+                        unused.push_back(st.dest());
+                        unused.push_back(st.value());
+                    }
+                }
+                if let Some(bb) = data.layout().parent_bb(u) {
+                    _ = data.layout_mut().bb_mut(bb).insts_mut().remove(&u);
+                }
+                data.dfg_mut().remove_value(u);
+            }
+            
+            // Handle unused BB parameters
+            let mut bb_param_used = HashMap::new();
+            for (bb, bb_data) in data.dfg().bbs() {
+                if !bb_data.params().is_empty() {
+                    let is_used: Vec<bool> = bb_data.params()
+                        .iter()
+                        .map(|v| !data.dfg().value(*v).used_by().is_empty())
+                        .collect();
+                    if !is_used.iter().all(|b| *b) {
+                        _ = bb_param_used.insert(*bb, is_used);
+                    }
                 }
             }
-            data.dfg_mut().remove_value(u);
+            // Shrink BB parameters
+            for (bb, is_used) in bb_param_used.iter() {
+                let bb_data = data.dfg_mut().bb_mut(*bb);
+                let mut iter = is_used.iter();
+                bb_data.params_mut().retain(|_| *iter.next().unwrap());
+            }
+            // Shrink jumps that goes to the shrinked BBs
+            for bb in all_bbs.iter() {
+                let last_inst = *data.layout_mut().bb_mut(*bb).insts().back_key()
+                    .expect("[OPT] encountered empty BB");
+    
+                _ = data.layout_mut().bb_mut(*bb).insts_mut().pop_back();
+                let mut inst_data = data.dfg_mut().remove_value(last_inst);
+                
+                match inst_data.kind_mut() {
+                    ValueKind::Branch(ref mut br) => {
+                        if let Some(is_used) = bb_param_used.get(&br.true_bb()) {
+                            let mut iter = is_used.iter();
+                            br.true_args_mut().retain(|p| {
+                                let keep = *iter.next().unwrap();
+                                if !keep {
+                                    unused.push_back(*p);
+                                }
+                                keep
+                            });
+                        }
+                        if let Some(is_used) = bb_param_used.get(&br.false_bb()) {
+                            let mut iter = is_used.iter();
+                            br.false_args_mut().retain(|p| {
+                                let keep = *iter.next().unwrap();
+                                if !keep {
+                                    unused.push_back(*p);
+                                }
+                                keep
+                            });
+                        }
+                    },
+                    ValueKind::Jump(ref mut jmp) => {
+                        if let Some(is_used) = bb_param_used.get(&jmp.target()) {
+                            let mut iter = is_used.iter();
+                            jmp.args_mut().retain(|p| {
+                                let keep = *iter.next().unwrap();
+                                if !keep {
+                                    unused.push_back(*p);
+                                }
+                                keep
+                            });
+                        }
+                    },
+                    ValueKind::Return(_) => {/* No next */},
+                    _ => panic!("[OPT] non SSA IR"),
+                };
+    
+                let new_inst = data.dfg_mut().new_value().raw(inst_data);
+                _ = data.layout_mut().bb_mut(*bb).insts_mut().push_key_back(new_inst);
+            }
         }
 
         sanity_check(data);
 
+    }
+}
+
+/// Perform liveliness analysis on loaded and stored values,
+/// eliminating loads/stores that are not necessary.
+pub struct ElimLoadStore;
+
+impl ElimLoadStore {
+    fn run_on_func(
+        _data: &mut FunctionData,
+        _globals: &[Value]
+    ) {
+
+    }
+}
+
+impl ModulePass for ElimLoadStore {
+    fn run_on(&mut self, program: &mut Program) {
+        let globals: Vec<Value> = program.borrow_values()
+            .iter()
+            .filter_map(|(v, vdata)| {
+                if matches!(vdata.kind(), ValueKind::GlobalAlloc(_)) {
+                    return Some(*v)
+                }
+                return None
+            })
+            .collect();
+        for (_, data) in program.funcs_mut() {
+            ElimLoadStore::run_on_func(data, globals.as_slice())
+        }
     }
 }
