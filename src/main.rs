@@ -15,7 +15,7 @@ use frontend::ast::CompUnit;
 use middleend::{SymbolTable, Symbol, opt};
 use error::parse_general_error;
 
-lalrpop_mod!(sysy);
+lalrpop_mod!(sysy, "/frontend/sysy.rs");
 
 #[derive(Parser, Debug)]
 #[command(author = "echostone<EchoStone@gmail.com>")]
@@ -156,6 +156,7 @@ fn main() -> Result<()> {
 
             // Optionally apply optimizaton passes
             let mut passman = PassManager::new();
+            passman.register(Pass::Function(Box::new(opt::ElimUnusedValue)));
             passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
             passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
             // Apply twice deliberately
