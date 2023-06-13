@@ -471,38 +471,249 @@ impl FunctionPass for ElimUnusedValue {
                 _ = data.layout_mut().bb_mut(*bb).insts_mut().push_key_back(new_inst);
             }
         }
-
         sanity_check(data);
 
     }
 }
 
-/// Perform liveliness analysis on loaded and stored values,
-/// eliminating loads/stores that are not necessary.
-pub struct ElimLoadStore;
+/// Compares `lhs` with `rhs`, yielding `new` if equals,
+///  or `lhs` if not.
+macro_rules! replace {
+    ($lhs: expr, $rhs: expr, $new: expr) => {
+        if $lhs == $rhs {
+            $new
+        }
+        else {
+            $lhs
+        }
+    };
+}
 
-impl ElimLoadStore {
-    fn run_on_func(
-        _data: &mut FunctionData,
-        _globals: &[Value]
-    ) {
-
+/// Replaces all uses of `value` with `new_value`.
+fn replace_uses_with(
+    data: &mut FunctionData,
+    value: Value,
+    new_value: Value
+) {
+    let uses = Vec::from_iter(data.dfg_mut().value(value)
+        .used_by()
+        .iter()
+        .cloned()
+    );
+    for user in uses.iter() {
+        match data.dfg().value(*user).kind() {
+            ValueKind::Aggregate(_) | ValueKind::Alloc(_) |
+            ValueKind::BlockArgRef(_) | ValueKind::FuncArgRef(_) |
+            ValueKind::GlobalAlloc(_) | ValueKind::Integer(_) |
+            ValueKind::Undef(_) | ValueKind::ZeroInit(_)
+                => unimplemented!(),
+            ValueKind::Binary(b) => {
+                let b = b.clone();
+                data.dfg_mut().replace_value_with(*user).binary(
+                    b.op(),
+                    replace!(b.lhs(), value, new_value),
+                    replace!(b.rhs(), value, new_value),
+                );    
+            },
+            ValueKind::Branch(br) => {
+                let br = br.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .branch_with_args(
+                        replace!(br.cond(), value, new_value),
+                        br.true_bb(),
+                        br.false_bb(),
+                        br.true_args().iter().map(|p| replace!(*p, value, new_value)).collect(),
+                        br.false_args().iter().map(|p| replace!(*p, value, new_value)).collect(),
+                );
+            },
+            ValueKind::Call(call) => {
+                let call = call.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .call(
+                        call.callee(),
+                        call.args().iter().map(|p| replace!(*p, value, new_value)).collect(),
+                );
+            },
+            ValueKind::GetElemPtr(gep) => {
+                let gep = gep.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .get_elem_ptr(
+                        replace!(gep.src(), value, new_value),
+                        replace!(gep.index(), value, new_value),
+                );
+            },
+            ValueKind::GetPtr(gp) => {
+                let gp = gp.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .get_elem_ptr(
+                        replace!(gp.src(), value, new_value),
+                        replace!(gp.index(), value, new_value),
+                );
+            },
+            ValueKind::Jump(jump) => {
+                let jump = jump.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .jump_with_args(
+                        jump.target(),
+                        jump.args().iter().map(|p| replace!(*p, value, new_value)).collect(),
+                );
+            },
+            ValueKind::Load(ld) => {
+                let ld = ld.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .load(replace!(ld.src(), value, new_value));
+            },
+            ValueKind::Return(ret) => {
+                let ret = ret.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .ret(ret.value().clone().map(|v| replace!(v, value, new_value)));
+            },
+            ValueKind::Store(st) => {
+                let st = st.clone();
+                data.dfg_mut().replace_value_with(*user)
+                    .store(replace!(st.value(), value, new_value),
+                    replace!(st.dest(), value, new_value),
+                );
+            },
+        }
     }
 }
 
-impl ModulePass for ElimLoadStore {
-    fn run_on(&mut self, program: &mut Program) {
-        let globals: Vec<Value> = program.borrow_values()
+
+/// Perform liveliness analysis on loaded and stored values, 
+/// eliminating loads/stores that are not necessary.
+/// The implementation is currently naive, in that we only
+/// check within signle basic blocks.
+/// 
+/// TODO: this is not possible as of Koopa 0.0.7.
+struct ElimLoadStore;
+
+#[derive(Debug, Clone, Copy)]
+enum LoadStore {
+    Load(Value),
+    Store(Value, Value),
+}
+
+impl FunctionPass for ElimLoadStore {
+    fn run_on(&mut self, _: Function, data: &mut FunctionData) {
+
+        let entry_bb = data.layout().entry_bb();
+        if entry_bb.is_none() {
+            return;
+        }
+    
+        let bbs: Vec<BasicBlock> = data.layout().bbs()
             .iter()
-            .filter_map(|(v, vdata)| {
-                if matches!(vdata.kind(), ValueKind::GlobalAlloc(_)) {
-                    return Some(*v)
-                }
-                return None
-            })
+            .map(|(bb, _)| *bb)
             .collect();
-        for (_, data) in program.funcs_mut() {
-            ElimLoadStore::run_on_func(data, globals.as_slice())
+
+        // This pass will typically keep only the first load 
+        // and the last store to an address within a BB, exception
+        // being pointer accesses.
+        // Notably, this analysis will fail to recognize array accesses
+        // to the same position, if the common expression elimination
+        // pass is not applied ahead (i.e. the two gep addresses will appear
+        // to refer to different places).
+        let mut arbirary = HashSet::new();
+        arbirary.extend(data.params().iter().cloned());
+        for bb in bbs.iter() {
+            // Track address -> freshest load/store
+            let mut state: HashMap<Value, LoadStore> = HashMap::new();
+            let insts: Vec<Value>  = data.layout_mut().bb_mut(*bb).insts()
+                .iter()
+                .map(|(inst, _)| *inst)
+                .collect();
+            for inst in insts.iter() {
+                let inst_data = data.dfg().value(*inst);
+                match inst_data.kind().clone() {
+                    ValueKind::GetPtr(gp) => {
+                        if arbirary.contains(&gp.src()) {
+                            arbirary.insert(*inst);
+                        }
+                    },
+                    ValueKind::GetElemPtr(gep) => {
+                        if arbirary.contains(&gep.src()) {
+                            arbirary.insert(*inst);
+                        }
+                    },
+                    ValueKind::Load(ld) => {
+                        arbirary.insert(*inst);
+
+                        if arbirary.contains(&ld.src()) {
+                            // Loading from arbirary address must be done
+                            // faithfully.
+                            continue
+                        }
+
+                        let prev = state.get(&ld.src());
+                        match prev {
+                            Some(LoadStore::Load(val)) | Some(LoadStore::Store(_,val)) => {
+                                // Keep the previous load,
+                                // and this load can be discarded.
+                                data.layout_mut().bb_mut(*bb).insts_mut().remove(inst);
+                                replace_uses_with(data, *inst, *val);
+                                data.dfg_mut().remove_value(*inst);
+                            },
+                            None => {
+                                state.insert(ld.src(), LoadStore::Load(*inst));
+                            }
+                        }
+                    },
+                    ValueKind::Store(st) => {
+
+                        if arbirary.contains(&st.dest()) {
+                            // Storing to arbirary address kills all states.
+                            state.clear();
+                            continue
+                        }
+
+                        let prev = state.insert(
+                            st.dest(), 
+                            LoadStore::Store(*inst, st.value())
+                        );
+                        if let Some(LoadStore::Store(inst, _)) = prev {
+                            // Previous store may be avoided
+                            data.layout_mut().bb_mut(*bb).insts_mut().remove(&inst);
+                            data.dfg_mut().remove_value(inst);
+                        }
+                    },
+                    ValueKind::Call(call) => {
+                        
+                        if call.args().iter().any(|v| {
+                                if let Some(vdata) = data.dfg().values().get(v) {
+                                    if matches!(vdata.ty().kind(), TypeKind::Pointer(_)) {
+                                        return true;
+                                    }
+                                }
+                                return false;}
+                        ) {
+                            // Function call with pointer argument is potentially
+                            // an arbitrary store.
+                            state.clear();
+                            continue
+                        }
+                    }
+                    _ => {},
+                }
+            }
+
+        }
+        sanity_check(data);
+    }
+}
+
+#[allow(unused)]
+fn print_insts(data: &mut FunctionData, name: &str) {
+    let bbs: Vec<BasicBlock> = data.layout().bbs().iter().map(|(bb,_)| *bb).collect();
+
+    println!("======\n{}\n======", name);
+    for bb in bbs {
+        println!("{}", data.dfg().bb(bb).name().as_ref().unwrap().clone());
+        let insts: Vec<Value> = data.layout_mut().bb_mut(bb).insts().keys().cloned().collect();
+        for inst in insts {
+            println!("{:?}: {:?}", inst, data.dfg().value(inst));
         }
     }
+    println!();
+    println!();
 }
