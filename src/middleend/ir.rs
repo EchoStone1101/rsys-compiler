@@ -42,6 +42,17 @@ impl CompUnit {
             }
         }
     }
+
+    pub fn elim_unused_global(program: &mut Program) {
+        let unused: Vec<Value> = program.inst_layout()
+            .iter()
+            .filter(|v| program.borrow_value(**v).used_by().is_empty())
+            .cloned()
+            .collect();
+        for u in unused {
+            program.remove_value(u);
+        }
+    }
 }
 
 impl Decl {
@@ -1648,6 +1659,7 @@ fn def(
 ) {
     let (ident, const_exp, init_val) = args;
     let mut dims = Vec::new();
+    let mut is_global = false;
     // Must first evaluate the actual type of this definition
     let def = if let Some(func) = function {
 
@@ -1676,6 +1688,7 @@ fn def(
             // For now, init as undef.
             let undef = program.new_value().undef(ty);
             let alloc = program.new_value().global_alloc(undef);
+            is_global = true;
             alloc
         }
         else {
@@ -1722,12 +1735,22 @@ fn def(
             program.new_value().undef(ty)
         };
         let alloc = program.new_value().global_alloc(init);
+        is_global = true;
         alloc
     };
 
     // Add to symbol table; may err
     sym_tab.add(raw_input, ident, Symbol::Value(def, is_const, init_val.is_some(), 
         function.is_none() || is_const /* Either a global symbol, or a local const symbol */));
+    let scope_name = if let Some(func) = function {
+        String::from(&program.func(func).name()[1..])
+    }
+    else {
+        String::new()
+    };
+    if is_global {
+        program.set_value_name(def, sym_tab.get_mangled(&scope_name, ident));
+    }
 
     // Then handle the init value; this order is consistent with C.
     // For example:
@@ -1813,6 +1836,9 @@ fn def(
             program.remove_value(def);
             let alloc = program.new_value().global_alloc(init);
             _ = sym_tab.replace(ident, Symbol::Value(alloc, is_const, true, true));
+            if is_global {
+                program.set_value_name(alloc, sym_tab.get_mangled(&scope_name, ident));
+            }
         }
         // Otherwise, `init()` already generated instructions for the initialization.
     }

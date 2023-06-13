@@ -153,12 +153,13 @@ fn main() -> Result<()> {
             ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
             // Then populate Program.
             ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);
+            CompUnit::elim_unused_global(&mut program);
 
             // Optionally apply optimizaton passes
             let mut passman = PassManager::new();
-            passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
             // passman.register(Pass::Function(Box::new(opt::ElimLoadStore)));
             passman.register(Pass::Function(Box::new(opt::ElimUnusedValue)));
+            passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
             passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
             // Apply twice deliberately
             passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));

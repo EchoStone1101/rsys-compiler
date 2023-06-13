@@ -123,6 +123,20 @@ impl SymbolTable {
         None
     }
 
+    pub fn get_mangled(&self, scope_name: &String, ident: &Ident) -> Option<String> {
+        if let Some((id, v)) = self.symbols.get_key_value(&ident) {
+            if let Some((version, _)) = v.last() {
+                let mangled_name = if v.len() == 1 {
+                    String::from(ident.to_string())
+                } else {
+                    format!("{}_{}_{}", id.to_string(), scope_name, *version)
+                };
+                return Some(mangled_name)
+            }
+        }
+        None
+    }
+
     pub fn replace(&mut self, ident: &Ident, new_sym: Symbol) -> Option<Symbol> {
         if let Some(v) = self.symbols.get_mut(ident) {
             if let Some((version, sym)) = v.last_mut() {

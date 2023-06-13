@@ -122,6 +122,7 @@ impl FunctionPass for ElimUnreachableBlock {
         for bb in unreachable.iter() {
             let last_inst = *data.layout_mut().bb_mut(*bb).insts_mut().back_key().unwrap();
             data.dfg_mut().remove_value(last_inst);
+            // TODO: remove other values
             data.layout_mut().bb_mut(*bb).insts_mut().clear();
             _ = data.layout_mut().bbs_mut().remove(bb);
         }
