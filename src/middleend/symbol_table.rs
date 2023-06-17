@@ -123,13 +123,19 @@ impl SymbolTable {
         None
     }
 
-    pub fn get_mangled(&self, scope_name: &String, ident: &Ident) -> Option<String> {
+    pub fn get_mangled(
+        &self, 
+        scope_name: &String, 
+        ident: &Ident,
+        is_const: bool,
+    ) -> Option<String> {
         if let Some((id, v)) = self.symbols.get_key_value(&ident) {
             if let Some((version, _)) = v.last() {
+                let suffix = if is_const {"con"} else {"var"};
                 let mangled_name = if v.len() == 1 {
-                    String::from(ident.to_string())
+                    format!("{}_{}", id.to_string(), suffix)
                 } else {
-                    format!("{}_{}_{}", id.to_string(), scope_name, *version)
+                    format!("{}_{}_{}_{}", id.to_string(), scope_name, *version, suffix)
                 };
                 return Some(mangled_name)
             }

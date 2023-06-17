@@ -13,6 +13,7 @@ pub mod error;
 
 use frontend::ast::CompUnit;
 use middleend::{SymbolTable, Symbol, opt};
+use backend::RiscvGenerator;
 use error::parse_general_error;
 
 lalrpop_mod!(sysy, "/frontend/sysy.rs");
@@ -39,6 +40,8 @@ enum Mode {
     Koopa,
     #[value(name = "riscv")]
     RiscV,
+    #[value(name = "perf")]
+    Perf,
 }
 
 #[allow(unused)]
@@ -61,117 +64,131 @@ fn main() -> Result<()> {
     // Output
     let mut outfile = File::create(cli.out_file)?;
 
-    match cli.mode {
+    compile(&input, &mut outfile, cli.mode)?;
+    Ok(())
+}
+
+fn compile (
+    input: &String,
+    outfile: &mut File,
+    mode: Mode
+) -> Result<()> {
+
+    // Parse using lalrpop
+    let mut ast: Box<CompUnit> = sysy::CompUnitParser::new().parse(input, input)
+    .unwrap_or_else(|error| 
+        parse_general_error(input.as_bytes(), ErrorRecovery {error, dropped_tokens: Vec::new()}));
+
+    let mut program = Program::new();
+    let mut sym_tab = SymbolTable::new();
+
+    // First populate the symbol table with function
+    // declarations. These incluse user defined functions
+    // and SYSY library functions.
+    let lib_funcs = vec![
+
+        (
+            "@getint".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@getint".into(), 
+                vec![],
+                Type::get_i32(),
+            )))
+        ),
+
+        (
+            "@getch".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@getch".into(), 
+                vec![],
+                Type::get_i32(),
+            )))
+        ),
+
+        (
+            "@getarray".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@getarray".into(), 
+                vec![Type::get_pointer(Type::get_i32())],
+                Type::get_i32(),
+            )))
+        ),
+
+        (
+            "@putint".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@putint".into(), 
+                vec![Type::get_i32()],
+                Type::get_unit(),
+            )))
+        ),
+
+        (
+            "@putch".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@putch".into(), 
+                vec![Type::get_i32()],
+                Type::get_unit(),
+            )))
+        ),
+
+        (
+            "@putarray".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@putarray".into(), 
+                vec![Type::get_i32(), Type::get_pointer(Type::get_i32())],
+                Type::get_unit(),
+            )))
+        ),
+
+        (
+            "@starttime".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@starttime".into(), 
+                vec![],
+                Type::get_unit(),
+            )))
+        ),
+
+        (
+            "@stoptime".to_string(),
+            Symbol::Function(program.new_func(FunctionData::new(
+                "@stoptime".into(), 
+                vec![],
+                Type::get_unit(),
+            )))
+        ),
+    ];
+    sym_tab.init(&lib_funcs);
+
+    ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
+    // Then populate Program.
+    ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);
+    CompUnit::elim_unused_global(&mut program);
+
+    // Optionally apply optimizaton passes
+    let mut passman = PassManager::new();
+    // passman.register(Pass::Function(Box::new(opt::ElimLoadStore)));
+    passman.register(Pass::Function(Box::new(opt::ElimUnusedValue)));
+    passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
+    passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
+    // Apply twice deliberately
+    passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
+    passman.run_passes(&mut program);
+
+    match mode {
         Mode::Koopa => {
-            // Parse using lalrpop
-            let mut ast: Box<CompUnit> = sysy::CompUnitParser::new().parse(&input, &input)
-            .unwrap_or_else(|error| 
-                parse_general_error(&input.as_bytes(), ErrorRecovery {error, dropped_tokens: Vec::new()}));
-
-            let mut program = Program::new();
-            let mut sym_tab = SymbolTable::new();
-
-            // First populate the symbol table with function
-            // declarations. These incluse user defined functions
-            // and SYSY library functions.
-            let lib_funcs = vec![
-
-                (
-                    "@getint".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@getint".into(), 
-                        vec![],
-                        Type::get_i32(),
-                    )))
-                ),
-
-                (
-                    "@getch".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@getch".into(), 
-                        vec![],
-                        Type::get_i32(),
-                    )))
-                ),
-
-                (
-                    "@getarray".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@getarray".into(), 
-                        vec![Type::get_pointer(Type::get_i32())],
-                        Type::get_i32(),
-                    )))
-                ),
-
-                (
-                    "@putint".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@putint".into(), 
-                        vec![Type::get_i32()],
-                        Type::get_unit(),
-                    )))
-                ),
-
-                (
-                    "@putch".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@putch".into(), 
-                        vec![Type::get_i32()],
-                        Type::get_unit(),
-                    )))
-                ),
-
-                (
-                    "@putarray".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@putarray".into(), 
-                        vec![Type::get_i32(), Type::get_pointer(Type::get_i32())],
-                        Type::get_unit(),
-                    )))
-                ),
-
-                (
-                    "@starttime".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@starttime".into(), 
-                        vec![],
-                        Type::get_unit(),
-                    )))
-                ),
-
-                (
-                    "@stoptime".to_string(),
-                    Symbol::Function(program.new_func(FunctionData::new(
-                        "@stoptime".into(), 
-                        vec![],
-                        Type::get_unit(),
-                    )))
-                ),
-            ];
-            sym_tab.init(&lib_funcs);
-
-            ast.register_decls(input.as_bytes(), &mut program, &mut sym_tab);
-            // Then populate Program.
-            ast.append_to_program(input.as_bytes(), &mut program, &mut sym_tab);
-            CompUnit::elim_unused_global(&mut program);
-
-            // Optionally apply optimizaton passes
-            let mut passman = PassManager::new();
-            // passman.register(Pass::Function(Box::new(opt::ElimLoadStore)));
-            passman.register(Pass::Function(Box::new(opt::ElimUnusedValue)));
-            passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
-            passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
-            // Apply twice deliberately
-            passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));
-            passman.run_passes(&mut program);
-
             let mut gen = KoopaGenerator::new(Vec::new());
             gen.generate_on(&program).unwrap();
             let koopa_ir = std::str::from_utf8(&gen.writer()).unwrap().to_string();
             outfile.write_all(koopa_ir.as_bytes())?;
+        },
+        Mode::RiscV | Mode::Perf => {
+            let mut gen = RiscvGenerator::new(Vec::new());
+            gen.generate_on(&program).unwrap();
+            let riscv_code = std::str::from_utf8(&gen.writer()).unwrap().to_string();
+            outfile.write_all(riscv_code.as_bytes())?;
         }
-        _ => todo!(),
     }
-
     Ok(())
 }

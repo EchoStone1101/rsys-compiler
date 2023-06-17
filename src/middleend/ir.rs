@@ -1740,8 +1740,7 @@ fn def(
     };
 
     // Add to symbol table; may err
-    sym_tab.add(raw_input, ident, Symbol::Value(def, is_const, init_val.is_some(), 
-        function.is_none() || is_const /* Either a global symbol, or a local const symbol */));
+    sym_tab.add(raw_input, ident, Symbol::Value(def, is_const, init_val.is_some(), is_global));
     let scope_name = if let Some(func) = function {
         String::from(&program.func(func).name()[1..])
     }
@@ -1749,7 +1748,7 @@ fn def(
         String::new()
     };
     if is_global {
-        program.set_value_name(def, sym_tab.get_mangled(&scope_name, ident));
+        program.set_value_name(def, sym_tab.get_mangled(&scope_name, ident, is_const));
     }
 
     // Then handle the init value; this order is consistent with C.
@@ -1837,7 +1836,7 @@ fn def(
             let alloc = program.new_value().global_alloc(init);
             _ = sym_tab.replace(ident, Symbol::Value(alloc, is_const, true, true));
             if is_global {
-                program.set_value_name(alloc, sym_tab.get_mangled(&scope_name, ident));
+                program.set_value_name(alloc, sym_tab.get_mangled(&scope_name, ident, is_const));
             }
         }
         // Otherwise, `init()` already generated instructions for the initialization.
