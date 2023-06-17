@@ -628,9 +628,11 @@ impl<W: Write> ValueManager<W> {
     /// in `register_info`, and the corresponding `Value` is 
     /// not killed by `inst`.
     pub fn register_used_after(&self, reg: Reg, inst: Value) -> bool {
-        self.register_info[reg as usize].is_some_and(|v| {
-            !self.program_info.get_kills(&inst).map_or(false, |kills| kills.contains(&v))
-        })
+        self.register_info[reg as usize].is_some() 
+        && !self.program_info.get_kills(&inst).map_or(
+            false, 
+            |kills| kills.contains(&self.register_info[reg as usize].unwrap())
+        )
     }
 
     /// Map `reg` into the entry in `register_info`.
@@ -805,7 +807,7 @@ impl<W: Write> ValueManager<W> {
         let reg = self.register_info.iter().enumerate()
             .filter(|(i, _)| {
                 let reg = Reg::from(*i as i32);
-                !reg.is_reserved() && !skip.is_some_and(|r| r.contains(&reg))
+                !reg.is_reserved() && !(skip.is_some() && skip.unwrap().contains(&reg))
             })
             .map(|(i, user)| {
                 // Approximate cost for using each register
