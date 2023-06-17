@@ -1,5 +1,5 @@
 /target
 /debug
 /shared
-/vendor
-/.cargo
+# /vendor
+# /.cargo
