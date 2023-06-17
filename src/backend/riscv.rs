@@ -857,9 +857,9 @@ impl<W: Write> ValueManager<W> {
 
         // self.object_code.push(format!("  lui\t{}, %hi({})", TEMP_REG, name).into());
         // self.object_code.push(format!("  addi\t{}, %lo({})", TEMP_REG, name).into());
-        self.object_code.push(format!("  la\t{}, {}", TEMP_REG, name).into());
+        self.object_code.push(format!("  la\t{}, {}", reg, name).into());
 
-        self.emit_reg_load(ofs, TEMP_REG, reg);
+        self.emit_reg_load(ofs, reg, reg);
     }
 
     /// Emits a store of global value `value` with `reg`.
@@ -868,9 +868,9 @@ impl<W: Write> ValueManager<W> {
 
         // self.object_code.push(format!("  lui\t{}, %hi({})", TEMP_REG, name).into());
         // self.object_code.push(format!("  addi\t{}, %lo({})", TEMP_REG, name).into());
-        self.object_code.push(format!("  la\t{}, {}", TEMP_REG, name).into());
+        self.object_code.push(format!("  la\t{}, {}", reg, name).into());
 
-        self.emit_reg_store(ofs, TEMP_REG, reg);
+        self.emit_reg_store(ofs, reg, reg);
     }
 
     /// Emits a load of stack value at offset `ofs` into `reg`.
@@ -1118,7 +1118,6 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             self.visit_func(func)?;
             self.vm.exit_func(self.w)?;
         }
-        std::process::exit(self.program.func_layout().len() as i32);
         Ok(())
     }
   
