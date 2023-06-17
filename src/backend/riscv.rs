@@ -868,9 +868,11 @@ impl<W: Write> ValueManager<W> {
 
         // self.object_code.push(format!("  lui\t{}, %hi({})", TEMP_REG, name).into());
         // self.object_code.push(format!("  addi\t{}, %lo({})", TEMP_REG, name).into());
-        self.object_code.push(format!("  la\t{}, {}", reg, name).into());
 
-        self.emit_reg_store(ofs, reg, reg);
+        // This unfortunately takes two temporary registers.
+        self.object_code.push(format!("  la\t{}, {}", Reg::Tp, name).into());
+
+        self.emit_reg_store(ofs, Reg::Tp, reg);
     }
 
     /// Emits a load of stack value at offset `ofs` into `reg`.
