@@ -58,7 +58,7 @@ macro_rules! is_imm12 {
 macro_rules! stack_aligned {
     ($v:expr) => {
         if ($v) & 0xF != 0 {
-            (($v) | 0xF) + 1
+            ((($v) | 0xF) + 1)
         }
         else {
             ($v)
@@ -1084,6 +1084,9 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
 
     /// Visits the program.
     fn visit(&mut self) -> Result<()> {
+
+        Type::set_ptr_size(4);
+
         // Data section
         writeln!(self.w, ".data")?;
         // TODO: Global pointer optimization
