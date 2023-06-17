@@ -526,10 +526,6 @@ impl<W: Write> ValueManager<W> {
             self.stat.frame_size() + 4 * used_callee_saved.len() + 4 /* `ra` */
         );
 
-        if frame_size > 1024 * 1024 {
-            std::process::exit(frame_size as i32);
-        }
-
         for code in self.object_code.iter_mut() {
             match code {
                 Code::Literal(s) => writeln!(w, "{}", s)?,
@@ -1122,6 +1118,7 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             self.visit_func(func)?;
             self.vm.exit_func(self.w)?;
         }
+        std::process::exit(self.program.func_layout().len() as i32);
         Ok(())
     }
   
