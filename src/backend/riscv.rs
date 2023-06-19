@@ -1514,7 +1514,10 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             BinaryOp::Div | BinaryOp::Mod => {
                 if imm.count_ones() == 1 && imm > 0 {
                     // Power of 2 optimization
-                    let shamt = u32::ilog2(imm as u32);
+                    let mut shamt: u32 = 0;
+                    while (1 << shamt) as i32 != imm {
+                        shamt += 1;
+                    }
                     if matches!(op, BinaryOp::Div) {
                         self.vm.emit_code(format!("  srai {}, {}, {}", res, lhs, shamt).into());
                         self.vm.emit_code(format!("  slt {}, {}, {}", TEMP_REG, res, Reg::Zero).into());
