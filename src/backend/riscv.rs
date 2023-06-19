@@ -521,6 +521,8 @@ impl<W: Write> ValueManager<W> {
         // Frame pointer is always saved
         used_callee_saved.push(Reg::Fp);
 
+        // println!("===> used callee regs:{:?}", used_callee_saved);
+
         // Final frame size
         let frame_size = stack_aligned!(
             self.stat.frame_size() + 4 * used_callee_saved.len() + 4 /* `ra` */
@@ -768,7 +770,6 @@ impl<W: Write> ValueManager<W> {
             }
         };
         //println!("[INFO] {}", new_info.to_reg());
-        self.stat.use_reg(new_info.to_reg());
         new_info
     }
 
@@ -820,6 +821,7 @@ impl<W: Write> ValueManager<W> {
             })
             .min_by_key(|(cost, _)| *cost)
             .expect("[RISCV] no available register").1;
+        self.stat.use_reg(reg);
         reg
     }
 
@@ -902,7 +904,7 @@ impl<W: Write> ValueManager<W> {
     /// Emits a store of register-relative value at offset `ofs`
     /// with `src_reg`.
     pub fn emit_reg_store(&mut self, ofs: i32, reg: Reg, src_reg: Reg) {
-
+        
         if is_imm12!(ofs) {
             // Within imm12 offset
             self.object_code.push(format!("  sw\t{}, {}({})", src_reg, ofs, reg).into());
@@ -1139,6 +1141,7 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
 
         // Function name
         writeln!(self.w, "{}:", func_name)?;
+        // println!("{}", func_name);
 
         // Function arguments
         // According to RISCV calling convention, the first 8 arguments
@@ -1508,6 +1511,22 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             BinaryOp::Add => self.vm.emit_addi(lhs, imm, res),
             BinaryOp::Sub => self.vm.emit_addi(lhs, -imm, res),
             BinaryOp::Mul => self.vm.emit_muli(lhs, imm, res),
+            // BinaryOp::Div | BinaryOp::Mod => {
+            //     if imm.count_ones() == 1 && imm > 0 {
+            //         // Power of 2 optimization
+            //         let shamt = u32::ilog2(imm as u32);
+            //         if matches!(op, BinaryOp::Div) {
+            //             self.vm.emit_li(imm, rhs);
+            //         }
+            //     }
+            //     else {
+            //         let rhs = self.vm.alloc_register(Some(&[lhs, res]));
+            //         self.vm.evict(rhs);
+            //         self.vm.emit_li(imm, rhs);
+
+            //         return self.visit_binary_no_imm(op, lhs, rhs, res)
+            //     }
+            // },
             BinaryOp::Div | BinaryOp::Mod | BinaryOp::Gt | BinaryOp::Le => {
                 let rhs = self.vm.alloc_register(Some(&[lhs, res]));
                 self.vm.evict(rhs);
