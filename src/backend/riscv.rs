@@ -1511,23 +1511,28 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             BinaryOp::Add => self.vm.emit_addi(lhs, imm, res),
             BinaryOp::Sub => self.vm.emit_addi(lhs, -imm, res),
             BinaryOp::Mul => self.vm.emit_muli(lhs, imm, res),
-            // BinaryOp::Div | BinaryOp::Mod => {
-            //     if imm.count_ones() == 1 && imm > 0 {
-            //         // Power of 2 optimization
-            //         let shamt = u32::ilog2(imm as u32);
-            //         if matches!(op, BinaryOp::Div) {
-            //             self.vm.emit_li(imm, rhs);
-            //         }
-            //     }
-            //     else {
-            //         let rhs = self.vm.alloc_register(Some(&[lhs, res]));
-            //         self.vm.evict(rhs);
-            //         self.vm.emit_li(imm, rhs);
+            BinaryOp::Div | BinaryOp::Mod => {
+                if imm.count_ones() == 1 && imm > 0 {
+                    // Power of 2 optimization
+                    let shamt = u32::ilog2(imm as u32);
+                    if matches!(op, BinaryOp::Div) {
+                        self.vm.emit_code(format!("  srai {}, {}, {}", res, lhs, shamt).into());
+                        self.vm.emit_code(format!("  slt {}, {}, {}", TEMP_REG, res, Reg::Zero).into());
+                        self.vm.emit_code(format!("  add {}, {}, {}", res, res, TEMP_REG).into());
+                    }
+                    else {
+                        self.vm.emit_code(format!("  andi {}, {}, {}", res, lhs, ((1u32 << shamt)-1) as i32).into());
+                    }
+                }
+                else {
+                    let rhs = self.vm.alloc_register(Some(&[lhs, res]));
+                    self.vm.evict(rhs);
+                    self.vm.emit_li(imm, rhs);
 
-            //         return self.visit_binary_no_imm(op, lhs, rhs, res)
-            //     }
-            // },
-            BinaryOp::Div | BinaryOp::Mod | BinaryOp::Gt | BinaryOp::Le => {
+                    return self.visit_binary_no_imm(op, lhs, rhs, res)
+                }
+            },
+            BinaryOp::Gt | BinaryOp::Le => {
                 let rhs = self.vm.alloc_register(Some(&[lhs, res]));
                 self.vm.evict(rhs);
                 self.vm.emit_li(imm, rhs);
