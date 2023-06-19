@@ -995,7 +995,7 @@ impl<W: Write> ValueManager<W> {
         
         let popcnt = imm.count_ones();
         // The following trick works only for `reg != dest_reg`
-        if popcnt <= 3 && reg != dest_reg {
+        if popcnt <= 4 && reg != dest_reg {
             let mut generated = false;
             if imm & 1 != 0 {
                 self.emit_mv(reg, dest_reg);
@@ -1527,6 +1527,22 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
                         self.vm.emit_code(format!("  andi {}, {}, {}", res, lhs, ((1u32 << shamt)-1) as i32).into());
                     }
                 }
+                else if imm == 998244353 {
+                    // Optimize for non-power-of-two
+                    // TODO: generalize
+                    self.vm.emit_code(format!("  li {}, {}", TEMP_REG, 0x1135c811).into());
+                    self.vm.emit_code(format!("  mulh {}, {}, {}", res, lhs, TEMP_REG).into());
+                    self.vm.emit_code(format!("  srai {}, {}, {}", res, res, 0x1a).into());
+
+                    self.vm.emit_code(format!("  srai {}, {}, {}", TEMP_REG, lhs, 0x1f).into());
+                    self.vm.emit_code(format!("  sub {}, {}, {}", res, res, TEMP_REG).into());
+
+                    if matches!(op, BinaryOp::Mod) {
+                        self.vm.emit_code(format!("  li {}, {}", TEMP_REG, 998244353).into());
+                        self.vm.emit_code(format!("  mul {}, {}, {}", res, res, TEMP_REG).into());
+                        self.vm.emit_code(format!("  sub {}, {}, {}", res, lhs, res).into());
+                    }
+                }
                 else {
                     let rhs = self.vm.alloc_register(Some(&[lhs, res]));
                     self.vm.evict(rhs);
@@ -1543,14 +1559,22 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
                 return self.visit_binary_no_imm(op, lhs, rhs, res)
             },
             BinaryOp::Eq => {
-                // TODO: imm == 0
-                self.vm.emit_addi(lhs, -imm, TEMP_REG);
-                self.vm.emit_code(format!("  seqz {}, {}", res, TEMP_REG).into());
+                if imm != 0 {
+                    self.vm.emit_addi(lhs, -imm, TEMP_REG);
+                    self.vm.emit_code(format!("  seqz {}, {}", res, TEMP_REG).into());
+                }
+                else {
+                    self.vm.emit_code(format!("  seqz {}, {}", res, lhs).into());
+                }
             },
             BinaryOp::NotEq => {
-                // TODO: imm == 0
-                self.vm.emit_addi(lhs, -imm, TEMP_REG);
-                self.vm.emit_code(format!("  snez {}, {}", res, TEMP_REG).into());
+                if imm != 0 {
+                    self.vm.emit_addi(lhs, -imm, TEMP_REG);
+                    self.vm.emit_code(format!("  snez {}, {}", res, TEMP_REG).into());
+                }
+                else {
+                    self.vm.emit_code(format!("  snez {}, {}", res, lhs).into());
+                }
             },
             BinaryOp::Lt => {
                 self.vm.emit_slti(lhs, imm, res);
