@@ -491,6 +491,7 @@ macro_rules! replace {
 }
 
 /// Replaces all uses of `value` with `new_value`.
+#[allow(unused)]
 fn replace_uses_with(
     data: &mut FunctionData,
     value: Value,
@@ -586,21 +587,23 @@ fn replace_uses_with(
 /// The implementation is currently naive, in that we only
 /// check within signle basic blocks.
 /// 
-/// TODO: this is not possible as of Koopa 0.0.7.
-struct ElimLoadStore;
+/// As of Koopa 0.0.7, replacing value in IR is very hard to
+/// do (https://github.com/pku-minic/koopa/issues/4). Instead
+/// of modifying IR directly, we currently store the analysis
+/// result in `ElimLoadStore`, for the use of object code
+/// generation.
+#[derive(Debug)]
+pub struct ElimLoadStore;
 
-#[derive(Debug, Clone, Copy)]
-enum LoadStore {
-    Load(Value),
-    Store(Value, Value),
-}
+impl ElimLoadStore {
 
-impl FunctionPass for ElimLoadStore {
-    fn run_on(&mut self, _: Function, data: &mut FunctionData) {
+    pub fn run(&mut self, _: Function, data: &FunctionData) -> HashMap<BasicBlock, HashMap<Value, Value>> {
+
+        let mut shadowed_load_stores = HashMap::new();
 
         let entry_bb = data.layout().entry_bb();
         if entry_bb.is_none() {
-            return;
+            return shadowed_load_stores;
         }
     
         let bbs: Vec<BasicBlock> = data.layout().bbs()
@@ -615,33 +618,35 @@ impl FunctionPass for ElimLoadStore {
         // to the same position, if the common expression elimination
         // pass is not applied ahead (i.e. the two gep addresses will appear
         // to refer to different places).
-        let mut arbirary = HashSet::new();
-        arbirary.extend(data.params().iter().cloned());
+        let mut arbitrary = HashSet::new();
+        arbitrary.extend(data.params().iter().cloned());
         for bb in bbs.iter() {
             // Track address -> freshest load/store
             let mut state: HashMap<Value, LoadStore> = HashMap::new();
-            let insts: Vec<Value>  = data.layout_mut().bb_mut(*bb).insts()
+            let insts: Vec<Value>  = data.layout().bbs().cursor(*bb).node().unwrap().insts()
                 .iter()
                 .map(|(inst, _)| *inst)
                 .collect();
+
+            let mut bb_shadowed_load_stores = HashMap::new();
             for inst in insts.iter() {
                 let inst_data = data.dfg().value(*inst);
                 match inst_data.kind().clone() {
                     ValueKind::GetPtr(gp) => {
-                        if arbirary.contains(&gp.src()) {
-                            arbirary.insert(*inst);
+                        if arbitrary.contains(&gp.src()) {
+                            arbitrary.insert(*inst);
                         }
                     },
                     ValueKind::GetElemPtr(gep) => {
-                        if arbirary.contains(&gep.src()) {
-                            arbirary.insert(*inst);
+                        if arbitrary.contains(&gep.src()) {
+                            arbitrary.insert(*inst);
                         }
                     },
                     ValueKind::Load(ld) => {
-                        arbirary.insert(*inst);
+                        arbitrary.insert(*inst);
 
-                        if arbirary.contains(&ld.src()) {
-                            // Loading from arbirary address must be done
+                        if arbitrary.contains(&ld.src()) {
+                            // Loading from arbitrary address must be done
                             // faithfully.
                             continue
                         }
@@ -651,9 +656,12 @@ impl FunctionPass for ElimLoadStore {
                             Some(LoadStore::Load(val)) | Some(LoadStore::Store(_,val)) => {
                                 // Keep the previous load,
                                 // and this load can be discarded.
-                                data.layout_mut().bb_mut(*bb).insts_mut().remove(inst);
-                                replace_uses_with(data, *inst, *val);
-                                data.dfg_mut().remove_value(*inst);
+
+                                // data.layout_mut().bb_mut(*bb).insts_mut().remove(inst);
+                                // replace_uses_with(data, *inst, *val);
+                                // data.dfg_mut().remove_value(*inst);
+
+                                _ = bb_shadowed_load_stores.insert(*inst, *val);
                             },
                             None => {
                                 state.insert(ld.src(), LoadStore::Load(*inst));
@@ -662,32 +670,41 @@ impl FunctionPass for ElimLoadStore {
                     },
                     ValueKind::Store(st) => {
 
-                        if arbirary.contains(&st.dest()) {
-                            // Storing to arbirary address kills all states.
+                        if arbitrary.contains(&st.dest()) {
+                            // Storing to arbitrary address kills all states.
                             state.clear();
                             continue
+                        }
+
+                        if data.params().contains(&st.value()) {
+                            // For now, store of function arguments are not shadowed.
+                            continue;
                         }
 
                         let prev = state.insert(
                             st.dest(), 
                             LoadStore::Store(*inst, st.value())
                         );
-                        if let Some(LoadStore::Store(inst, _)) = prev {
+                        if let Some(LoadStore::Store(inst, val)) = prev {
                             // Previous store may be avoided
-                            data.layout_mut().bb_mut(*bb).insts_mut().remove(&inst);
-                            data.dfg_mut().remove_value(inst);
+
+                            // data.layout_mut().bb_mut(*bb).insts_mut().remove(&inst);
+                            // data.dfg_mut().remove_value(inst);
+
+                            _ = bb_shadowed_load_stores.insert(inst, val);
                         }
                     },
                     ValueKind::Call(call) => {
                         
-                        if call.args().iter().any(|v| {
+                        if call.args().iter()
+                            .any(|v| {
                                 if let Some(vdata) = data.dfg().values().get(v) {
                                     if matches!(vdata.ty().kind(), TypeKind::Pointer(_)) {
                                         return true;
                                     }
                                 }
-                                return false;}
-                        ) {
+                                return false;
+                            }) {
                             // Function call with pointer argument is potentially
                             // an arbitrary store.
                             state.clear();
@@ -697,9 +714,25 @@ impl FunctionPass for ElimLoadStore {
                     _ => {},
                 }
             }
-
+            _ = shadowed_load_stores.insert(*bb, bb_shadowed_load_stores);
         }
-        sanity_check(data);
+
+        // In Koopa 0.0.7 the IR is not modified.
+        // sanity_check(data);
+        shadowed_load_stores
+    }
+
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LoadStore {
+    Load(Value),
+    Store(Value, Value),
+}
+
+impl FunctionPass for ElimLoadStore {
+    fn run_on(&mut self, _: Function, _: &mut FunctionData) {
+        todo!()
     }
 }
 

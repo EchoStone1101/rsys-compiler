@@ -41,7 +41,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use koopa::ir::{*, entities::*, values::*, layout::*};
 use koopa::back::{Generator, NameManager};
 use crate::backend::program_info::*;
-use crate::middleend::ir::to_i32;
+use crate::middleend::ir::{to_i32, binary_op_eval};
 
 const REG_COUNT: usize = 32;
 
@@ -484,7 +484,7 @@ impl<W: Write> ValueManager<W> {
         } = *self;
 
         let kills = program_info.get_kills(&inst);
-        // println!("[KILL] {:?} {:?}", inst, kills);
+        //println!("[KILL] {:?} {:?}", inst, kills);
         if kills.is_none() {
             return
         }
@@ -1216,10 +1216,10 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
         // Instrustions in BB
         let insts: Vec<&Value> = node.insts().keys().collect();
         for inst in insts[..insts.len()-1].iter() {
-            self.visit_local_inst(**inst, value!(self, **inst))?;
+            self.visit_local_inst(bb, **inst, value!(self, **inst))?;
         }
         self.vm.emit_code(Code::Guard(None));
-        self.visit_local_inst(**insts.last().unwrap(), value!(self, **insts.last().unwrap()))?;
+        self.visit_local_inst(bb, **insts.last().unwrap(), value!(self, **insts.last().unwrap()))?;
 
         // Check for outlivers referenced;
         // they must be evicted.
@@ -1251,14 +1251,14 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
     }
   
     /// Generates the given local instruction.
-    fn visit_local_inst(&mut self, inst: Value, data: &ValueData) -> Result<()> {
+    fn visit_local_inst(&mut self, bb: BasicBlock, inst: Value, data: &ValueData) -> Result<()> {
 
         // println!("[VISIT]: {:?}\n{:?}", inst, data);
 
         match data.kind() {
             ValueKind::Alloc(_) => self.visit_alloc(inst, data.ty()),
-            ValueKind::Load(v) => self.visit_load(inst, v),
-            ValueKind::Store(v) => self.visit_store(inst, v),
+            ValueKind::Load(v) => self.visit_load(bb, inst, v),
+            ValueKind::Store(v) => self.visit_store(bb, inst, v),
             ValueKind::GetPtr(v) => self.visit_getptr(inst, v),
             ValueKind::GetElemPtr(v) => self.visit_getelemptr(inst, v),
             ValueKind::Binary(v) => self.visit_binary(inst, v),
@@ -1288,7 +1288,25 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
     }
   
     /// Generates memory load.
-    fn visit_load(&mut self, inst: Value, load: &Load) -> Result<()> {
+    fn visit_load(&mut self, bb: BasicBlock, inst: Value, load: &Load) -> Result<()> {
+
+        if let Some(shadowed_by) = self.vm.program_info.get_shadowed_by(&bb, &inst) {
+            if let Some((imm, _)) = to_i32(value!(self, shadowed_by)) {
+                let res_reg = self.vm.alloc_register(None);
+                self.vm.insert_info(inst, ValueInfo::Reg(res_reg));
+
+                self.vm.emit_li(imm, res_reg);
+                return Ok(())
+            }
+
+            // This load can be shadowed by this previous `Value`.
+            let reg = self.vm.value_to_register(shadowed_by, None).to_reg();
+            let res_reg = self.vm.alloc_register(Some(&[reg]));
+            self.vm.insert_info(inst, ValueInfo::Reg(res_reg));
+
+            self.vm.emit_mv(reg, res_reg);
+            return Ok(())
+        }
 
         let offset = self.vm.value_to_offset(load.src());
         // Mind the order in which register are allocated.
@@ -1296,21 +1314,21 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
             ValueInfo::RegOffset(reg_val, ofs) => {
                 let base_reg = self.vm.value_to_register(reg_val, None).to_reg();
                 let dest_reg = self.vm.alloc_register(Some(&[base_reg]));
-                self.vm.emit_reg_load(ofs, base_reg, dest_reg);
-
                 self.vm.insert_info(inst, ValueInfo::Reg(dest_reg));
+
+                self.vm.emit_reg_load(ofs, base_reg, dest_reg);
             },
             ValueInfo::StackOffset(ofs) => {
                 let dest_reg = self.vm.alloc_register(None);
-                self.vm.emit_stack_load(ofs, dest_reg);
-
                 self.vm.insert_info(inst, ValueInfo::Reg(dest_reg));
+
+                self.vm.emit_stack_load(ofs, dest_reg);
             },
             ValueInfo::GlobalOffset(globl, ofs) => {
                 let dest_reg = self.vm.alloc_register(None);
-                self.vm.emit_globl_load(globl, ofs, dest_reg);
-
                 self.vm.insert_info(inst, ValueInfo::Reg(dest_reg));
+
+                self.vm.emit_globl_load(globl, ofs, dest_reg);        
             },
             _ => unreachable!(),
         }
@@ -1337,10 +1355,9 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
     }
   
     /// Generates memory store.
-    fn visit_store(&mut self, _: Value, store: &Store) -> Result<()> {
+    fn visit_store(&mut self, bb: BasicBlock, inst: Value, store: &Store) -> Result<()> {
 
         let offset = self.vm.value_to_offset(store.dest());
-
         // Handle pseudo aggregate store
         match value!(self, store.value()).kind() {
             ValueKind::Aggregate(agg) => {
@@ -1355,6 +1372,12 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
                 return Ok(())
             },
             _ => {},
+        }
+
+        if let Some(_) = self.vm.program_info.get_shadowed_by(&bb, &inst) {
+            // This store is shadowed (and is not an aggregate store);
+            // it can be skipped.
+            return Ok(())
         }
 
         let src_reg = if let Some((imm, _)) = to_i32(value!(self, store.value())) {
@@ -1458,7 +1481,13 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
         let vrhs = bin.rhs();
 
         match (to_i32(value!(self, vlhs)), to_i32(value!(self, vrhs))) {
-            (Some((_, _)), Some((_, _))) => panic!("[RISCV] binary with both constant operand"),
+            (Some((l, _)), Some((r, _))) => {
+                let res = self.vm.alloc_register(None);
+                let (imm, _) = binary_op_eval(&op, l, r);
+                self.vm.insert_info(inst, ValueInfo::Reg(res));
+                self.vm.emit_li(imm, res);
+                return Ok(())
+            },
             (Some((l, _)), None) => {
                 self.visit_binary_limm(inst, op, l, vrhs)
             },

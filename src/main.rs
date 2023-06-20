@@ -168,7 +168,6 @@ fn compile (
 
     // Optionally apply optimizaton passes
     let mut passman = PassManager::new();
-    // passman.register(Pass::Function(Box::new(opt::ElimLoadStore)));
     passman.register(Pass::Function(Box::new(opt::ElimUnusedValue)));
     passman.register(Pass::Function(Box::new(opt::ElimUnreachableBlock)));
     passman.register(Pass::Function(Box::new(opt::ElimUselessBlock)));

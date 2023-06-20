@@ -5,6 +5,7 @@
 #[allow(unused)]
 use koopa::ir::*;
 use std::collections::{HashMap, HashSet};
+use crate::opt;
 
 #[derive(Debug, Default)]
 pub(in crate::backend) struct ProgramInfo {
@@ -19,6 +20,8 @@ pub(in crate::backend) struct ProgramInfo {
 
     allocs: HashSet<Value>,
 
+    load_store_info: HashMap<BasicBlock, HashMap<Value, Value>>,
+
 }
 
 impl ProgramInfo {
@@ -32,7 +35,8 @@ impl ProgramInfo {
 
     pub fn new_func(&mut self, program: &Program, func: Function) {
 
-        self.init_kills(program, func);
+        let mut pass = opt::ElimLoadStore;
+        self.load_store_info = pass.run(func, program.func(func));
 
         self.bbs.clear();
         let func_name = program.func(func).name();
@@ -57,6 +61,9 @@ impl ProgramInfo {
                 }
             })
         );
+
+        self.init_kills(program, func);
+
     }
 
     fn init_kills(&mut self, program: &Program, func: Function) {
@@ -129,10 +136,27 @@ impl ProgramInfo {
                 }
             }
 
+            // A depended `Value`, for simplicity, is killed at the end
+            // of the block.
+            let last_inst = bb_data.insts().back_key().expect("[PROGINFO] empty bb");
+            // println!("[INFO] current shadow at {:?}: {:?}", self.get_bb(bb), self.load_store_info.get(&bb).unwrap());
+            for (_, depended) in self.load_store_info.get(&bb).unwrap().iter() {
+                if let Some(user) = last_use_of.get_mut(depended) {
+                    match func.dfg().value(*depended).kind() {
+                        ValueKind::Integer(_) | ValueKind::Store(_) |
+                        ValueKind::Undef(_) | ValueKind::ZeroInit(_)
+                            => continue,
+                        ValueKind::Aggregate(_) => unreachable!(),
+                        _ => {},
+                    }
+                    // println!("[INFO] fixing {:?}, delay kill to {:?}", depended, last_inst);
+                    *user = *last_inst;
+                }
+            }
+
             for (inst, mut user) in last_use_of.iter() {
                 let mut cur_inst = inst;
                 loop {
-                    
                     // If used by a GEP or GP as source, recursively find its
                     // last use.
                     match func.dfg().value(*user).kind() {
@@ -210,6 +234,14 @@ impl ProgramInfo {
 
     pub fn is_alloc(&self, inst: &Value) -> bool {
         self.allocs.contains(inst)
+    }
+
+    pub fn get_shadowed_by(&self, bb: &BasicBlock, inst: &Value) -> Option<Value> {
+        self.load_store_info
+            .get(bb)
+            .map_or(None, |bb_map| {
+                bb_map.get(inst).cloned()
+            })
     }
 
     // Collects value uses

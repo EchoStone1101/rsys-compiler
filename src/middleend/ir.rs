@@ -2042,7 +2042,7 @@ pub(crate) fn to_i32(data: &ValueData) -> Option<(i32, bool)> {
     }
 }
 
-fn binary_op_eval(op: &BinaryOp, lvalue: i32, rvalue: i32) -> (i32, bool) {
+pub(crate) fn binary_op_eval(op: &BinaryOp, lvalue: i32, rvalue: i32) -> (i32, bool) {
     match op {
         BinaryOp::Or => ((lvalue != 0 || rvalue != 0) as i32, false),
         BinaryOp::And => ((lvalue != 0 && rvalue != 0) as i32, false),
