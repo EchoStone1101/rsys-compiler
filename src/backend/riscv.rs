@@ -991,7 +991,19 @@ impl<W: Write> ValueManager<W> {
         let mut imm = imm as u32;
         if imm == 0 {
             self.emit_mv(Reg::Zero, dest_reg);
-            return;
+            return
+        }
+
+        // Todo: generalize for all multipliers
+        if imm == 8040 {
+            self.object_code.push(format!("  slli\t{}, {}, {}", TEMP_REG, reg, 3).into()); //8x
+            self.object_code.push(format!("  add\t{}, {}, {}", dest_reg, TEMP_REG, TEMP_REG).into()); //16x
+            self.object_code.push(format!("  add\t{}, {}, {}", TEMP_REG, dest_reg, TEMP_REG).into()); //24x
+            self.object_code.push(format!("  slli\t{}, {}, {}", dest_reg, dest_reg, 3).into()); //128x
+            self.object_code.push(format!("  add\t{}, {}, {}", TEMP_REG, dest_reg, TEMP_REG).into()); //152x
+            self.object_code.push(format!("  slli\t{}, {}, {}", dest_reg, dest_reg, 6).into()); //8192x
+            self.object_code.push(format!("  sub\t{}, {}, {}", dest_reg, dest_reg, TEMP_REG).into()); //8040x
+            return
         }
         
         let popcnt = imm.count_ones();
