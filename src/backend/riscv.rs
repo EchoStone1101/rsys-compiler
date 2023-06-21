@@ -1359,8 +1359,13 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
                     self.visit_agg_store(temp_reg, ofs, agg.elems())?;
                 },
                 ValueKind::Integer(i) => {
-                    self.vm.emit_li(i.value(), temp_reg);
-                    self.vm.emit_stack_store(ofs, temp_reg);
+                    if i.value() != 0 {
+                        self.vm.emit_li(i.value(), temp_reg);
+                        self.vm.emit_stack_store(ofs, temp_reg);
+                    }
+                    else {
+                        self.vm.emit_stack_store(ofs, Reg::Zero);
+                    }
                 },
                 _ => unreachable!()
             }
