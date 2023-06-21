@@ -1,5 +1,6 @@
 //! Implements optimization passes for the Koopa IR.
 
+use koopa::ir::entities::ValueData;
 use koopa::opt::*;
 use koopa::ir::{*, builder_traits::*};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -735,6 +736,117 @@ impl FunctionPass for ElimLoadStore {
         todo!()
     }
 }
+
+
+pub struct SimpleFunctionAnalysis;
+
+impl SimpleFunctionAnalysis {
+
+    fn accesses_global(program: &Program, data: &ValueData) -> bool {
+        match data.kind() {
+            ValueKind::Alloc(_) => false,
+            ValueKind::GlobalAlloc(_) |
+            ValueKind::BlockArgRef(_) | ValueKind::FuncArgRef(_) |
+            ValueKind::Aggregate(_) | ValueKind::Integer(_) |
+            ValueKind::Undef(_) | ValueKind::ZeroInit(_)
+                => unreachable!(),
+            ValueKind::Binary(_) => false,
+            ValueKind::Branch(_) => false,
+            ValueKind::Call(call) => {
+                call.args().iter().any(|p| program.borrow_values().contains_key(p))
+            },
+            ValueKind::GetElemPtr(gep) => {
+                program.borrow_values().contains_key(&gep.src())
+            },
+            ValueKind::GetPtr(gp) => {
+                program.borrow_values().contains_key(&gp.src())
+            },
+            ValueKind::Jump(_) => false,
+            ValueKind::Load(ld) => {
+                program.borrow_values().contains_key(&ld.src())
+            },
+            ValueKind::Return(_) => false,
+            ValueKind::Store(st) => {
+                program.borrow_values().contains_key(&st.dest())
+            },
+        }
+    }
+
+    /// Returns a Some containing dependent functions if the function
+    /// is simple without checking function calls (the Some set can be
+    /// empty, in which case the function is definitely simple). If
+    /// None is returned, the function must not be simple.
+    /// This function dependency may need further analysis to really
+    /// determine whether a function is simple.
+    fn is_simple(program: &Program, func: &FunctionData) -> Option<HashSet<Function>> {
+        // A function is deemed "simple function", iff it:
+        // - Does not access global variables
+        // - Does not have pointer arguments
+        // - Does not call functions that is not a simple function
+        // Consequently, its return value is strictly a function
+        // of arguments and as no side effect, making it possible to 
+        // replace a function call with a cached result.
+        let mut depended_function = HashSet::new();
+
+        if func.name() == "@main" {
+            return None
+        }
+
+        // Declaration-only function is not simple.
+        if func.layout().entry_bb().is_none() {
+            return None
+        }
+
+        for p in func.params() {
+            if matches!(func.dfg().value(*p).ty().kind(), TypeKind::Pointer(_)) {
+                return None
+            }
+        }
+
+        for (_, bb_data) in func.layout().bbs() {
+            for (inst, _) in bb_data.insts() {
+                let inst_data = func.dfg().value(*inst);
+                if SimpleFunctionAnalysis::accesses_global(program, inst_data) {
+                    return None
+                }
+                if let ValueKind::Call(call) = inst_data.kind() {
+                    _ = depended_function.insert(call.callee());
+                }
+            }
+        }
+
+        return Some(depended_function)
+    }
+
+    /// Returns the set of simple functions within `program`.
+    pub fn simple_functions(program: &Program) -> Vec<Function> {
+        let mut func_map: HashMap<Function, _> = program.funcs()
+            .iter()
+            .filter_map(|(func, data)| {
+                let dep = SimpleFunctionAnalysis::is_simple(program, data);
+                if dep.is_some() {
+                    Some((*func, dep.unwrap()))
+                }
+                else {
+                    None
+                }
+            })
+            .collect();
+
+        // Remove a function from the set, if it depends on
+        // functions not in the set (i.e. definitely not simple).
+        while let Some((func, _)) = func_map.iter().find(|(_, dep)| {
+            dep.iter().any(|d| !func_map.contains_key(d))
+        }) {
+            let func = func.clone();
+            func_map.remove(&func);
+        }
+
+        // The remaining functions are all simple.
+        func_map.keys().cloned().collect()
+    }
+}
+
 
 #[allow(unused)]
 fn print_insts(data: &mut FunctionData, name: &str) {

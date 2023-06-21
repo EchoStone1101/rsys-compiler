@@ -22,6 +22,8 @@ pub(in crate::backend) struct ProgramInfo {
 
     load_store_info: HashMap<BasicBlock, HashMap<Value, Value>>,
 
+    simple_functions: Vec<Function>,
+
 }
 
 impl ProgramInfo {
@@ -30,7 +32,21 @@ impl ProgramInfo {
             program.inst_layout().iter()
                 .map(|v| (*v, name_stripped(
                     program.borrow_value(*v).name().as_ref().expect("[PROGINFO] global must be named")
-        ))))
+        ))));
+
+        self.init_simple_functions(program);
+    }
+
+    fn init_simple_functions(&mut self, program: &Program) {
+        // For practical reasons, only cache results for simple 
+        // functions with 2 or less arguments.
+        self.simple_functions = opt::SimpleFunctionAnalysis::simple_functions(program)
+            .iter()
+            .filter(|func| {
+                program.func(**func).params().len() <= 2
+            })
+            .cloned()
+            .collect();
     }
 
     pub fn new_func(&mut self, program: &Program, func: Function) {
@@ -244,6 +260,14 @@ impl ProgramInfo {
             })
     }
 
+    pub fn is_simple_function(&self, func: &Function) -> bool {
+        self.simple_functions.contains(func)
+    }
+
+    pub fn get_simple_functions(&self) -> &[Function] {
+        &self.simple_functions
+    }
+
     // Collects value uses
     // self.value_uses.clear();
     // let func = program.func(func);
@@ -285,4 +309,8 @@ pub(in crate::backend) fn name_is_const(n: &str) -> bool {
 
 pub(in crate::backend) fn name_stripped(n: &str) -> String {
     String::from(&n[1..n.len()-4])
+}
+
+pub(in crate::backend) fn cached_name(n: &str) -> String {
+    String::from(&n[1..]) + "_cached"
 }

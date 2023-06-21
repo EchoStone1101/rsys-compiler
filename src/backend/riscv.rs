@@ -108,7 +108,8 @@ impl Reg {
     fn is_reserved(&self) -> bool {
         match self {
             Reg::Zero | Reg::Ra | Reg::Sp |
-            Reg::Gp | Reg::Fp | Reg::Tp 
+            Reg::Gp | Reg::Fp | Reg::Tp |
+            Reg::S11 /* S11 is also reserved for compiler use. */
                 => true,
             _ => false,
         }
@@ -1093,7 +1094,21 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
 
         // Data section
         writeln!(self.w, ".data")?;
-        // TODO: Global pointer optimization
+        // Cached data for simple functions
+        for func in self.vm.program_info.get_simple_functions() {
+            let data = self.program.func(*func);
+            let name = cached_name(data.name());
+            writeln!(self.w, "  .globl {}", name)?;
+            writeln!(self.w, "{}:", name)?;
+            // Uninit Field
+            writeln!(self.w, "  .word 1")?;
+            // Arg1
+            writeln!(self.w, "  .word 0")?;
+            // Arg2
+            writeln!(self.w, "  .word 0")?;
+            // Cached value
+            writeln!(self.w, "  .word 0")?;
+        }
 
         let mut const_global_insts = Vec::new();
         for inst in self.program.inst_layout() {
@@ -1799,8 +1814,67 @@ impl<'a, W: Write> VisitorImpl<'a, W> {
         }
 
         // Ready to call
-        let name = &self.program.func(call.callee()).name()[1..];
-        self.vm.emit_code(format!("  call {}", name).into());
+        if self.vm.program_info.is_simple_function(&call.callee()) {
+            // Simple-function cache optimization
+            let data = self.program.func(call.callee());
+            let cached_name = cached_name(data.name());
+
+            self.vm.emit_code(format!("  la {}, {}", Reg::Tp, cached_name).into());
+            self.vm.emit_code(format!("  lw {}, 0({})", Reg::S11, Reg::Tp).into()); // Uninit bit
+
+            for i in 0..data.params().len() {
+                self.vm.emit_code(format!("  lw {}, {}({})", TEMP_REG, (i+1)*4, Reg::Tp).into()); // Args
+                self.vm.emit_code(format!("  xor {}, {}, {}", TEMP_REG, TEMP_REG, 
+                    Reg::from(Reg::A0 as i32 + i as i32)).into());
+                self.vm.emit_code(format!("  or {}, {}, {}", Reg::S11, Reg::S11, TEMP_REG).into());
+            }
+
+            // If Uninit bit is set or any of the arguments mismatches, 
+            // `Reg::S11` will be non-zero, and a call is needed.
+            let func_name = func!(self).name();
+            let nonce = self.vm.stat.nonce();
+            let label_call = format!("{}_call_{}", &func_name[1..], nonce);
+            let label_skip = format!("{}_skip_{}", &func_name[1..], nonce);
+            self.vm.emit_code(format!("  bne {}, {}, {}", Reg::S11, Reg::Zero, label_call).into());
+
+            // Skipped
+            if !ret_is_unit {
+                self.vm.emit_code(format!("  lw {}, 12({})", Reg::A0, Reg::Tp).into()); // Cached value
+                self.vm.emit_code(format!("  j {}", label_skip).into());
+            }
+
+            // Call
+            let name = &self.program.func(call.callee()).name()[1..];
+            self.vm.emit_code(format!("{}:", label_call).into());
+
+            self.vm.evict(Reg::A0);
+            self.vm.evict(Reg::A1); // Save A0 and A1 because they are needed to fill the cache
+            self.vm.emit_code(format!("  call {}", name).into());
+
+            self.vm.emit_code(format!("  la {}, {}", Reg::Tp, cached_name).into());
+            self.vm.emit_code(format!("  sw {}, 0({})", Reg::Zero, Reg::Tp).into()); // Clears Uninit bit
+            if !ret_is_unit {
+                self.vm.emit_code(format!("  sw {}, 12({})", Reg::A0, Reg::Tp).into()); // Caches return value
+            }
+            for i in 0..data.params().len() {
+                let arg = call.args().get(i).unwrap();
+                let reg = if let Some((imm, _)) = to_i32(value!(self, *arg)) {
+                    self.vm.emit_li(imm, TEMP_REG);
+                    TEMP_REG
+                }
+                else {
+                    self.vm.value_to_register(*arg, None).to_reg()
+                };
+                self.vm.emit_code(format!("  sw {}, {}({})", reg, (i+1)*4, Reg::Tp).into()); // Stores argument
+            }
+            
+            self.vm.emit_code(format!("{}:", label_skip).into());
+        }
+        else {
+            // Call normally
+            let name = &self.program.func(call.callee()).name()[1..];
+            self.vm.emit_code(format!("  call {}", name).into());
+        }
 
         // Bind return value
         if !ret_is_unit {
