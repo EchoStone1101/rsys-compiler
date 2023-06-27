@@ -104,7 +104,7 @@ RSYSY supports a superset of the SYSY language, including:
 
 #### ✅　Optimization Passes
 
-RSYSY currently implements 5 optimization passes. See Section 2.3.3 for details.
+RSYSY currently implements 5 optimization passes. See the optimizations sub-section for details.
 
 #### ✅　RISCV ABI-Compliant Codegen
 
